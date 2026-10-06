@@ -1,0 +1,19 @@
+{
+    "name": "GS.Bootstrap",
+    "rootNamespace": "GS",
+    "references": [
+        "Unity.TextMeshPro",
+        "HybridCLR.Runtime",
+        "Unity.Addressables",
+        "Unity.ResourceManager"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

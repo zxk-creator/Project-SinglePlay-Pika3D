@@ -1,0 +1,22 @@
+{
+    "name": "GS.HotFix",
+    "rootNamespace": "",
+    "references": [
+        "LiteNetLib",
+        "Unity.TextMeshPro",
+        "Unity.RenderPipelines.Universal.Runtime",
+        "Unity.RenderPipelines.Core.Runtime",
+        "Unity.Addressables",
+        "Unity.ResourceManager",
+        "Gilzoide.SqliteNet"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
