@@ -10,9 +10,6 @@ using UnityEngine;
 [RequireComponent(typeof(Equip))]
 public abstract class CharacterBase : Actor, ICharacterAnimationOwner
 {
-    /// <summary>骨架相对角色根的向下偏移，对齐地面用（原来建骨架后手写的 0.126）</summary>
-    private const float SkeletonGroundOffset = 0.126f;
-
     [Header("基本")]
     public CharacterAnimation characterAnimation;
 
@@ -21,15 +18,15 @@ public abstract class CharacterBase : Actor, ICharacterAnimationOwner
     public Equip equipSystem;
 
     [Header("物理")]
-    public Rigidbody rb;
-    public CapsuleCollider capsule;
+    public Rigidbody movementRb;
+    public CapsuleCollider characterCapsuleCol;
     [Tooltip("true = 不可被推动/推挤（碰撞仍生效，不会穿模；用于NPC等不可推动角色）")]
     public bool immovable;
 
     /// <summary>运行时自动创建的高摩擦材质（Inspector 未赋值时用）</summary>
-    private PhysicsMaterial _runtimeHighFriction;
+    private PhysicsMaterial runtimeHighFriction;
     /// <summary>运行时自动创建的零摩擦材质（Inspector 未赋值时用）</summary>
-    private PhysicsMaterial _runtimeNoFriction;
+    private PhysicsMaterial runtimeNoFriction;
 
     [Header("地面检测")]
     [Tooltip("从胶囊体底部向下检测的距离")]
@@ -71,62 +68,42 @@ public abstract class CharacterBase : Actor, ICharacterAnimationOwner
     private bool isJumping;
     private bool isGrounded;
 
+    public CharacterBase()
+    {
+        isNPC = this.GetType() != typeof(LocalPlayer);
+    }
+
     protected virtual void Start()
     {
         characterAnimation = GetComponentInChildren<CharacterAnimation>();
         property = GetComponent<CharacterProperty>();
-        isNPC = this.GetType() != typeof(LocalPlayer);
 
-        if (rb == null) rb = GetComponent<Rigidbody>();
-        if (capsule == null) capsule = GetComponent<CapsuleCollider>();
+        if (movementRb == null) movementRb = GetComponent<Rigidbody>();
+        if (characterCapsuleCol == null) characterCapsuleCol = GetComponent<CapsuleCollider>();
         if (equipSystem == null) equipSystem = GetComponentInChildren<Equip>();
 
-        NormalizeSkeleton();
-
-        rb.useGravity = true;
-        rb.freezeRotation = true;
-        rb.interpolation = RigidbodyInterpolation.Interpolate;
-        rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+        movementRb.useGravity = true;
+        movementRb.freezeRotation = true;
+        movementRb.interpolation = RigidbodyInterpolation.Interpolate;
+        movementRb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
 
         if (immovable)
-            rb.constraints = RigidbodyConstraints.FreezeAll;
+            movementRb.constraints = RigidbodyConstraints.FreezeAll;
 
-        capsule.center = Vector3.up * 1f;
+        characterCapsuleCol.center = Vector3.up * 1f;
+
+        EnableOrDisableRagdoll(false);
     }
 
-    /// <summary>
-    /// 骨架是预先放在 prefab 里的固定子节点，但它的局部坐标不受代码控制
-    /// （拖进来时 Unity 可能保留世界坐标，编辑器里也可能被误动）。
-    /// 这里拉回正确位置：局部零位，再往下挪 0.126 对齐地面。
-    /// </summary>
-    private void NormalizeSkeleton()
-    {
-        Transform t = equipSystem.bonesRoot;
-        if (t == null)
-        {
-            PK.Log.Error("Equip.bonesRoot没赋值，拉不回骨架位置");
-            return;
-        }
-        t.localRotation = Quaternion.identity;
-        t.localScale = Vector3.one;
-        t.localPosition = new Vector3(0f, -SkeletonGroundOffset, 0f);
-    }
-
-    // ═══════════════════════════════════════════════════════
-    //  浴巾造型快捷方法（纯渲染层，转发给 EquipSystem）
-    // ═══════════════════════════════════════════════════════
-
-    /// <summary>切换到浴巾造型（渲染层）：头发换浴巾、其余部位恢复默认，头脸不变。见 Equip.ApplyBathSuit</summary>
+    /// <summary>切换到浴巾造型（只作为渲染）：头发换浴巾、其余部位恢复默认，头脸不变。见 Equip.ApplyBathSuit</summary>
     public void ApplyBathSuit()
     {
-        if (equipSystem == null) equipSystem = GetComponentInChildren<Equip>();
         equipSystem.ApplyBathSuit();
     }
 
     /// <summary>恢复浴巾造型之前的穿戴显示。见 Equip.ApplyEquipedSuit</summary>
     public void ApplyEquipedSuit()
     {
-        if (equipSystem == null) equipSystem = GetComponentInChildren<Equip>();
         equipSystem.ApplyEquipedSuit();
     }
 
@@ -138,48 +115,48 @@ public abstract class CharacterBase : Actor, ICharacterAnimationOwner
     protected virtual void FixedUpdate()
     {
         // 按着地状态切换胶囊体物理材质：
-        // 着地 → 高摩擦（站斜坡不下滑）；空中 → 零摩擦（撞墙不被吸附）
+        // 着地 → 高摩擦（站斜坡/地面不下滑）；空中 → 零摩擦（撞墙不被吸附）
         PhysicsMaterial target = isGrounded ? GetHighFrictionMaterial() : GetNoFrictionMaterial();
-        capsule.sharedMaterial = target;
+        characterCapsuleCol.sharedMaterial = target;
     }
 
     /// <summary>高摩擦材质：Inspector 赋值优先，否则运行时创建（摩擦 1 + Maximum 组合，保证与任何表面接触都取高摩擦）</summary>
     private PhysicsMaterial GetHighFrictionMaterial()
     {
-        if (_runtimeHighFriction == null)
+        if (runtimeHighFriction == null)
         {
-            _runtimeHighFriction = new PhysicsMaterial("CharacterHighFriction");
-            _runtimeHighFriction.dynamicFriction = 0.8f;
-            _runtimeHighFriction.staticFriction = 0.9f;
-            _runtimeHighFriction.frictionCombine = PhysicsMaterialCombine.Average;
-            _runtimeHighFriction.bounciness = 0f;
+            runtimeHighFriction = new PhysicsMaterial("CharacterHighFriction");
+            runtimeHighFriction.dynamicFriction = 0.8f;
+            runtimeHighFriction.staticFriction = 0.9f;
+            runtimeHighFriction.frictionCombine = PhysicsMaterialCombine.Average;
+            runtimeHighFriction.bounciness = 0f;
         }
-        return _runtimeHighFriction;
+        return runtimeHighFriction;
     }
 
     /// <summary>零摩擦材质：Inspector 赋值优先，否则运行时创建</summary>
     private PhysicsMaterial GetNoFrictionMaterial()
     {
-        if (_runtimeNoFriction == null)
+        if (runtimeNoFriction == null)
         {
-            _runtimeNoFriction = new PhysicsMaterial("CharacterNoFriction");
-            _runtimeNoFriction.dynamicFriction = 0f;
-            _runtimeNoFriction.staticFriction = 0f;
-            _runtimeNoFriction.frictionCombine = PhysicsMaterialCombine.Minimum;
-            _runtimeNoFriction.bounciness = 0f;
+            runtimeNoFriction = new PhysicsMaterial("CharacterNoFriction");
+            runtimeNoFriction.dynamicFriction = 0f;
+            runtimeNoFriction.staticFriction = 0f;
+            runtimeNoFriction.frictionCombine = PhysicsMaterialCombine.Minimum;
+            runtimeNoFriction.bounciness = 0f;
         }
-        return _runtimeNoFriction;
+        return runtimeNoFriction;
     }
 
     public void Move(Vector3 velocity)
     {
         isGrounded = IsGrounded();
 
-        if (isGrounded && rb.linearVelocity.y <= 0.01f)
+        if (isGrounded && movementRb.linearVelocity.y <= 0.01f)
             isJumping = false;
 
     
-        Vector3 targetVel = new Vector3(velocity.x, rb.linearVelocity.y, velocity.z);
+        Vector3 targetVel = new Vector3(velocity.x, movementRb.linearVelocity.y, velocity.z);
 
         if (isGrounded)
         {
@@ -202,24 +179,15 @@ public abstract class CharacterBase : Actor, ICharacterAnimationOwner
             }
         }
 
-        Vector3 diff = targetVel - rb.linearVelocity;
-        rb.AddForce(diff, ForceMode.VelocityChange);
-    }
-
-    private Vector3 GetGroundNormal()
-    {
-        Vector3 origin = transform.position + capsule.center - Vector3.up * (capsule.height * 0.45f);
-        RaycastHit hit;
-        if (Physics.Raycast(origin + Vector3.up * 0.2f, Vector3.down, out hit, groundCheckDistance + 0.5f, groundLayerMask))
-            return hit.normal;
-        return Vector3.up;
+        Vector3 diff = targetVel - movementRb.linearVelocity;
+        movementRb.AddForce(diff, ForceMode.VelocityChange);
     }
 
     public void Jump()
     {
         if (!IsGrounded()) return;
-        float yDiff = jumpSpeed - rb.linearVelocity.y;
-        rb.AddForce(Vector3.up * yDiff, ForceMode.VelocityChange);
+        float yDiff = jumpSpeed - movementRb.linearVelocity.y;
+        movementRb.AddForce(Vector3.up * yDiff, ForceMode.VelocityChange);
         isJumping = true;
     }
 
@@ -237,15 +205,15 @@ public abstract class CharacterBase : Actor, ICharacterAnimationOwner
         // 优先判断空中状态
         if (!IsGrounded())
         {
-            if (rb.linearVelocity.y > 0.1f)
+            if (movementRb.linearVelocity.y > 0.1f)
                 moveState = EAnimationState.FLY_IDLE;
-            else if (rb.linearVelocity.y < -0.1f)
+            else if (movementRb.linearVelocity.y < -0.1f)
                 moveState = EAnimationState.FLY_RUN;
             return;
         }
 
         // 地面状态
-        float hSpeedSqr = rb.linearVelocity.x * rb.linearVelocity.x + rb.linearVelocity.z * rb.linearVelocity.z;
+        float hSpeedSqr = movementRb.linearVelocity.x * movementRb.linearVelocity.x + movementRb.linearVelocity.z * movementRb.linearVelocity.z;
         if (hSpeedSqr < 0.01f)
             moveState = EAnimationState.IDLE;
         else if (isRunPressed)
@@ -266,7 +234,7 @@ public abstract class CharacterBase : Actor, ICharacterAnimationOwner
         isDead = true;
         moveState = EAnimationState.DEAD;
 
-        rb.linearVelocity = new Vector3(0,rb.linearVelocity.y,0);
+        movementRb.linearVelocity = new Vector3(0,movementRb.linearVelocity.y,0);
     }
 
     public virtual void Revive()
@@ -279,18 +247,60 @@ public abstract class CharacterBase : Actor, ICharacterAnimationOwner
 
     public bool IsGrounded()
     {
-        Vector3 realBottom = transform.position + capsule.center - Vector3.up * (capsule.height * 0.45f);
+        Vector3 realBottom = transform.position + characterCapsuleCol.center - Vector3.up * (characterCapsuleCol.height * 0.45f);
         return Physics.CheckSphere(realBottom, groundCheckDistance, groundLayerMask);
+    }
+
+    /// <summary>
+    /// 开启角色的布娃娃系统，用于死亡等
+    /// 注意，他仅负责开启布娃娃，至于死了还要干什么，不负责。
+    /// </summary>
+    /// <param name="enable"></param>
+    public void EnableOrDisableRagdoll(bool enable)
+    {
+        if (!enable)
+        {
+            // 游戏开始时，取消骨骼的碰撞，原本预留用于布娃娃的，但是实际上没必要
+            Transform root = equipSystem.bonesRoot;
+            foreach (Collider c in root.GetComponentsInChildren<Collider>(true))
+                c.enabled = false;
+            foreach (Rigidbody r in root.GetComponentsInChildren<Rigidbody>(true))
+            {
+                r.detectCollisions = false;
+                r.isKinematic = true;
+            }
+        }
+        else
+        {
+            // 死亡的时候开启布娃娃
+            Transform root = equipSystem.bonesRoot;
+            foreach (Collider c in root.GetComponentsInChildren<Collider>(true))
+                c.enabled = true;
+            foreach (Rigidbody r in root.GetComponentsInChildren<Rigidbody>(true))
+            {
+                r.detectCollisions = true;
+                r.isKinematic = false;
+            }
+        }
+    }
+
+    private Vector3 GetGroundNormal()
+    {
+        Vector3 origin = transform.position + characterCapsuleCol.center - Vector3.up * (characterCapsuleCol.height * 0.45f);
+        RaycastHit hit;
+        if (Physics.Raycast(origin + Vector3.up * 0.2f, Vector3.down, out hit, groundCheckDistance + 0.5f, groundLayerMask))
+            return hit.normal;
+        return Vector3.up;
     }
 
     public void SetRigidbodyKinematic(bool kinematic)
     {
-        rb.isKinematic = kinematic;
+        movementRb.isKinematic = kinematic;
     }
 
     void OnDrawGizmosSelected()
     {
-        Vector3 realBottom = transform.position + capsule.center - Vector3.up * (capsule.height * 0.45f);
+        Vector3 realBottom = transform.position + characterCapsuleCol.center - Vector3.up * (characterCapsuleCol.height * 0.45f);
         Gizmos.color = IsGrounded() ? Color.green : Color.red;
         Gizmos.DrawWireSphere(realBottom, groundCheckDistance);
     }

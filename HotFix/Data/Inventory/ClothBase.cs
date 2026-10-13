@@ -110,10 +110,37 @@ public class ClothBase : ItemBase
         bw.Put(Durability);
     }
 
+    // 反序列化，这就需要注意：反序列化后出来的数据都是空的，我们需要去数据库查。
     public override void Deserialize(NetDataReader br)
     {
         base.Deserialize(br);
         OdorLevel = br.GetFloat();
         Durability = br.GetFloat();
+
+        // 下面就是去数据库查找的代码
+        ClothBase template = Context.Item.GetItemCopyById(id) as ClothBase;
+        if (template == null)
+        {
+            PK.Log.Error($"[ClothBase] 反序列化找不到模板 id={id}");
+            return;
+        }
+
+        // 模板字段（从数据库补）
+        iconPath = template.iconPath;
+        description = template.description;
+        value = template.value;
+        itemName = template.itemName;
+        occupiedSpace = template.occupiedSpace;
+        quality = template.quality;
+        canStack = template.canStack;
+        itemType = template.itemType;
+        clothType = template.clothType;
+        canColored = template.canColored;
+        prefabPath = template.prefabPath;
+        addedCharm = template.addedCharm;
+        conflictPart = template.conflictPart != null
+            ? new List<EClothType>(template.conflictPart)
+            : null;
+
     }
 }

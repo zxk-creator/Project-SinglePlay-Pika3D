@@ -78,12 +78,12 @@ public class GameMainPanel : UIBase, IInputAcceptable
 
     public override void Show()
     {
-        UIPrefab.SetActive(true);
+        SetVisible(true);
     }
 
     public override void Hide()
     {
-        UIPrefab.SetActive(false);
+        SetVisible(false);
     }
 
     public override void Destroy()

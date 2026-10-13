@@ -1,7 +1,7 @@
 using UnityEngine;
 
 /// <summary>
-/// CharacterAnimation 真正依赖的那几个成员。
+/// CharacterAnimation 依赖的那几个成员。
 /// 提出接口是为了让"不是 CharacterBase 的角色"（比如纯显示用的 NetPlayer）
 /// 也能带 CharacterAnimation，而不用去继承整套物理和移动逻辑。
 ///

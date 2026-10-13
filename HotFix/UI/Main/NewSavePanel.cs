@@ -769,6 +769,7 @@ public class NewSavePanel : UIBase
         StopTick();
 
         // 实例化一个saveData出来，给存档系统用于写入到磁盘
+        // 为什么一堆null，因为玩家出生的时候什么都没有只有衣服
         var saveData = new PKSv.SaveData
         {
             bagpackItems = null,
@@ -777,8 +778,6 @@ public class NewSavePanel : UIBase
             handItems = null,
             playerName = playerName,
             worldName = worldName,
-            // 性别必须跟着一起存：下面 equipedCloth 是按 isGirl 那一套挑的，
-            // 读档时如果不还原性别，会拿男装 id 去女装列表里找，部位全对不上
             isGirl = isGirl
         };
 

@@ -92,6 +92,11 @@ public class MessageManager
         {
             new PhonePanel().Show();
         }
+        // 无限体力
+        else if (cmd == "/god")
+        {
+            Context.localPlayer.property.SetStaminaConsumeDisabled(true);
+        }
         else
         {
             Log.Error("未知命令：" + parts[0]);

@@ -39,7 +39,7 @@ public class NPC : CharacterBase
     public override void Dead()
     {
         base.Dead();
-        rb.linearVelocity = new Vector3(0,rb.linearVelocity.y,0);
+        movementRb.linearVelocity = new Vector3(0,movementRb.linearVelocity.y,0);
     }
 
     public void ApplyCloth(CharacterEquipCollection cloths)

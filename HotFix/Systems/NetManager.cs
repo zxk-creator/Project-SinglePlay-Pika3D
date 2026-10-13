@@ -26,7 +26,7 @@ public class NetManager
     // 出生点配置，替代文本配置。懒得配文本了
     public Dictionary<ESceneType, Vector3> spawnPoint = new Dictionary<ESceneType, Vector3>
     {
-        { ESceneType.CITY, new Vector3(-1460.05f, 15.12f, -827.49f) }
+        { ESceneType.CITY, new Vector3(-1460.05f, 30.12f, -827.49f) }
     };
 
     public NetManager()

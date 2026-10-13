@@ -1,4 +1,4 @@
-﻿using LiteNetLib.Utils;
+using LiteNetLib.Utils;
 using System.Collections.Generic;
 using UnityEngine;
 using PK;
@@ -131,6 +131,7 @@ public class BagpackBase : ItemBase
         copy.value = value;
         copy.capacity = capacity;
         copy.id = id;
+        copy.itemType = itemType;
         foreach (var i in items)
         {
             copy.items.Add(i.GetACopy());
@@ -175,5 +176,27 @@ public class BagpackBase : ItemBase
             item.Deserialize(br);
             items.Add(item);
         }
+
+        // 下面就是去数据库查找的代码
+        // 注意：必须在读完 items 之后再查，否则会打乱流的位置
+        BagpackBase template = Context.Item.GetItemCopyById(id) as BagpackBase;
+        if (template == null)
+        {
+            PK.Log.Error($"[BagpackBase] 反序列化找不到模板 id={id}");
+            return;
+        }
+
+        // 模板字段（从数据库补）
+        iconPath = template.iconPath;
+        description = template.description;
+        value = template.value;
+        itemName = template.itemName;
+        occupiedSpace = template.occupiedSpace;
+        quality = template.quality;
+        canStack = template.canStack;
+        itemType = template.itemType;
+        // capacity 是 private set，走它自己的 setter（内部有 Clamp）
+        SetBagCapacity(template.capacity);
+        // 注意：items 是存档里的真实数据，不要被模板覆盖
     }
 }

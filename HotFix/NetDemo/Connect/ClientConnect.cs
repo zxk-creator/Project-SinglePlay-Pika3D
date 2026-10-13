@@ -200,7 +200,11 @@ public class ClientConnect : MonoBehaviour
                     Context.sc.SpawnANetPlayer(v);
                 }
 
-                // 我们先生成玩家，然后使其DontDestroyOnLoad
+                // 进入场景。必须 sendToServer=true：
+                // 服务端要据此把"这个 peer 在哪个场景"记下来，后面才有办法只把同场景的人发给我
+                Context.sc.EnterNewScene(resp.enterScene, true);
+
+                // 生成玩家，然后使其DontDestroyOnLoad
                 Context.sc.SpawnALocalPlayer(plyData, resp.spawnPoint);
                 if (Context.localPlayer == null)
                 {
@@ -211,10 +215,6 @@ public class ClientConnect : MonoBehaviour
 
                 // 使得本地玩家不被销毁，我们手动销毁
                 DontDestroyOnLoad(Context.localPlayer);
-
-                // 直接进入场景。必须 sendToServer=true：
-                // 服务端要据此把"这个 peer 在哪个场景"记下来，后面才有办法只把同场景的人发给我
-                Context.sc.EnterNewScene(resp.enterScene, true);
             
                 // 回调：说不定有一些操作
                 onConnectionSuccess.Invoke(resp.spawnPoint, resp.enterScene);

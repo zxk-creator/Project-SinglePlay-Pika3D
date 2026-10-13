@@ -79,7 +79,6 @@ public class BagPanel : UIBase,IInputAcceptable
             itemBox.UIPrefab.transform.SetParent(HandSpace);
         }
         // 设置父级的Preferred Size
-        
         var handcom = GetTargetComponent<LayoutElement>("HandSpace");
         if (playerInventory.HandSpace.items.Count >= 1)
         {
@@ -91,13 +90,23 @@ public class BagPanel : UIBase,IInputAcceptable
         }
         
 
-        // 实例化背包UI
-        foreach (var item in playerInventory.BagSpace.items)
+        // 实例化背包UI。
+        // BagSpace 为 null 是正常状态（当前没穿戴任何背包），此时没有格子要填，
+        // 高度按 0 处理，与上面 HandSpace 的处理方式保持一致。
+        if (playerInventory.BagSpace != null)
         {
-            var itemBox = new InventoryItem(item, this, EOperateLocation.InventoryArea);
-            itemBox.UIPrefab.transform.SetParent(BagSpace);
+            foreach (var item in playerInventory.BagSpace.items)
+            {
+                var itemBox = new InventoryItem(item, this, EOperateLocation.InventoryArea);
+                itemBox.UIPrefab.transform.SetParent(BagSpace);
+            }
+
+            GetTargetComponent<LayoutElement>("BagpackSpace").preferredHeight = playerInventory.BagSpace.items.Count * 100;
         }
-        GetTargetComponent<LayoutElement>("BagpackSpace").preferredHeight = playerInventory.BagSpace.items.Count * 100;
+        else
+        {
+            GetTargetComponent<LayoutElement>("BagpackSpace").preferredHeight = 0;
+        }
 
         var equips = playerInventory.equips;
         // 实例化LeftArea的装备UI
@@ -141,7 +150,7 @@ public class BagPanel : UIBase,IInputAcceptable
 
     private void ExitBagPanel()
     {
-        Context.um.Pop();
+        Context.um.Pop(this);
         Destroy();
     }
 }

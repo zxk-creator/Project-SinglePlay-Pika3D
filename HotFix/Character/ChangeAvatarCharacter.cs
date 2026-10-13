@@ -7,12 +7,7 @@ public class ChangeAvatarCharacter : MonoBehaviour, ICharacterAnimationOwner
     public Camera renderView;
     public RenderTexture renderTexture;
 
-    /// <summary>
-    /// 骨架相对角色根的向下偏移，对齐地面用（原来 CharacterBase 建骨架后手写的 0.126）
-    /// </summary>
-    private const float SkeletonGroundOffset = 0.126f;
-
-    [Tooltip("Inspector手动赋值")]
+    [Tooltip("Inspector手动赋值（displayCloth.bonesRoot 同样要预先连到这具骨架）")]
     public GameObject bonesRoot;
 
     private Animator previewAnimator;
@@ -49,7 +44,8 @@ public class ChangeAvatarCharacter : MonoBehaviour, ICharacterAnimationOwner
 
     /// <summary>
     /// 切性别：骨架不换（男女骨架层级相同），只换外观和动画。
-    /// 先把骨骼根指好，Equip.SetGender 才能往上挂部件。
+    /// 骨架归一化与 displayCloth.bonesRoot 都交给 Equip（Awake 里统一拉正，
+    /// 且依赖 displayCloth.bonesRoot 在 Inspector 里预先连好）。
     /// </summary>
     private void ApplyGender(bool newIsGirl)
     {
@@ -66,10 +62,7 @@ public class ChangeAvatarCharacter : MonoBehaviour, ICharacterAnimationOwner
 
         isGirl = newIsGirl;
 
-        NormalizeSkeleton();
-
         displayCloth.isNPC = false;
-        displayCloth.bonesRoot = bonesRoot.transform;
 
         // 穿戴侧：切性别 + 清骨骼缓存 + 按新性别默认装重穿
         displayCloth.SetGender(newIsGirl);
@@ -86,19 +79,6 @@ public class ChangeAvatarCharacter : MonoBehaviour, ICharacterAnimationOwner
             return;
         }
         previewAnimator.enabled = true;
-    }
-
-    /// <summary>
-    /// 骨架是预先放在 prefab 里的固定子节点，但它的局部坐标不受代码控制
-    /// （拖进来时 Unity 可能保留世界坐标，编辑器里也可能被误动）。
-    /// 这里每次切性别都拉回正确位置：局部零位，再往下挪 0.126 对齐地面。
-    /// </summary>
-    private void NormalizeSkeleton()
-    {
-        Transform t = bonesRoot.transform;
-        t.localRotation = Quaternion.identity;
-        t.localScale = Vector3.one;
-        t.localPosition = new Vector3(0f, -SkeletonGroundOffset, 0f);
     }
 
     public void Wear(ClothBase newCloth)

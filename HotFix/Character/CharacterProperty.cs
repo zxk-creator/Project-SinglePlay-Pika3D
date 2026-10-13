@@ -31,7 +31,7 @@ public class CharacterProperty : MonoBehaviour, IDeathAndRevive
     private const float STAMINA_RECOVER_DELAY = 1.5f;
 
     // 各操作单次消耗的真体力
-    private const float RUN_COST = 0.2f;
+    private float RUN_COST = 0.2f;
     private const float MINING_COST = 1f;
     private const float CUT_TREE_COST = 1f;
 
@@ -76,6 +76,9 @@ public class CharacterProperty : MonoBehaviour, IDeathAndRevive
     private float tickAccumulator;
     // 消耗后禁止恢复的剩余时间（秒），>0 时 health 不恢复
     private float recoverBlockRemain;
+
+    // 是否开启了无限体力开关
+    private bool staminaConsumeDisabled = false;
 
     // 当前真体力条上限 = 100 - 全部负面值（最低 0）
     public float MaxHealth
@@ -152,6 +155,9 @@ public class CharacterProperty : MonoBehaviour, IDeathAndRevive
     // 按操作类型消耗真体力（Run 为一次性小扣，Mining/CutTree 扣得多）
     public void ConsumeStamina(EActionType type)
     {
+        if (staminaConsumeDisabled) return;
+
+        
         switch (type)
         {
             case EActionType.Run:
@@ -179,6 +185,12 @@ public class CharacterProperty : MonoBehaviour, IDeathAndRevive
         hunger = Mathf.Max(0f, hunger - amount);
         RecoverSanity(amount);
         propertyChanged?.Invoke();
+    }
+
+    /// <summary>设置是否禁用所有体力消耗。true = 消耗全部为 0。</summary>
+    public void SetStaminaConsumeDisabled(bool disabled)
+    {
+        staminaConsumeDisabled = disabled;
     }
 
     // 减少中毒值（回复量按比例恢复 sanity）

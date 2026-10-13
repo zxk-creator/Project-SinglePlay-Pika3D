@@ -5,9 +5,6 @@ using UnityEngine;
 // 网络玩家的真身：纯显示用，位置/朝向/动画全部由服务端下发。
 public class NetPlayer : Actor, ICharacterAnimationOwner
 {
-    /// <summary>骨架相对角色根的向下偏移，对齐地面用（原来 CharacterBase 建骨架后手写的 0.126）</summary>
-    private const float SkeletonGroundOffset = 0.126f;
-
     public Equip equipSystem;
     public CharacterAnimation characterAnimation;
 
@@ -36,8 +33,6 @@ public class NetPlayer : Actor, ICharacterAnimationOwner
             return;
         }
 
-        NormalizeSkeleton();
-
         if (pendingOutfit != null)
         {
             isGirl = pendingIsGirl;
@@ -45,24 +40,6 @@ public class NetPlayer : Actor, ICharacterAnimationOwner
         }
 
         TryApplyOutfit();
-    }
-
-    /// <summary>
-    /// 骨架是预先放在 prefab 里的固定子节点，但它的局部坐标不受代码控制
-    /// （拖进来时 Unity 可能保留世界坐标，编辑器里也可能被误动）。
-    /// 这里拉回正确位置：局部零位，再往下挪 0.126 对齐地面。
-    /// </summary>
-    private void NormalizeSkeleton()
-    {
-        Transform t = equipSystem.bonesRoot;
-        if (t == null)
-        {
-            Log.Error("[NetPlayer] Equip.bonesRoot 没赋值，拉不回骨架位置");
-            return;
-        }
-        t.localRotation = Quaternion.identity;
-        t.localScale = Vector3.one;
-        t.localPosition = new Vector3(0f, -SkeletonGroundOffset, 0f);
     }
 
     // 网络那边发过来信号就调用这个。

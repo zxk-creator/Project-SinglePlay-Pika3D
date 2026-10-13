@@ -101,7 +101,7 @@ public class SceneFurnitureBase : SceneObjectBase, IControlable, IInputAcceptabl
         }
         interactingChars[targetKey] = null;
         who.transform.SetParent(null, true);
-        who.rb.isKinematic = false;
+        who.movementRb.isKinematic = false;
         // 起身：常规Idle带层前缀，同步播5层恢复
         who.characterAnimation.PlayLocomotionAllLayers("Idle");
         who.characterAnimation.isDoingAction = false;

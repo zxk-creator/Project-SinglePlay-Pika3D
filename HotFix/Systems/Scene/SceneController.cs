@@ -168,7 +168,7 @@ public class SceneController
         var localPlayer = instancedObj.GetComponent<LocalPlayer>();
         if (localPlayer == null)
         {
-            Log.Error("[SceneController] LocalPlayer 预制体的根节点上没有挂 LocalPlayer 脚本，无法生成本地玩家");
+            Log.Error("LocalPlayer 预制体的根节点上没有挂 LocalPlayer 脚本，无法生成本地玩家");
             Object.Destroy(instancedObj);
             return;
         }
@@ -191,6 +191,15 @@ public class SceneController
 
         // 设置本地玩家为非运动学的（加个？是因为进入TITLE的时候localPlayer根本没有，一跑到这就抛异常）
         Context.localPlayer?.SetRigidbodyKinematic(false);
+        // 如果是城市场景，收集场景
+        switch (currentScene)
+        {
+            case ESceneType.CITY:
+                {
+                    Context.localPlayer?.CollectMeshCollider();
+                    break;
+                }
+        }
     }
 
     public void CallBeginEnterNewScene(ESceneType newScene)

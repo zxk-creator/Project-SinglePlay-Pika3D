@@ -99,6 +99,12 @@ public abstract class UIBase
             // 设置隐藏
             document.rootVisualElement.style.display = DisplayStyle.None;
         }
+
+        // 跨场景常驻。
+        UnityEngine.Object.DontDestroyOnLoad(UIPrefab);
+
+        if (canvasGO != null)
+            UnityEngine.Object.DontDestroyOnLoad(canvasGO);
     }
 
     public virtual void Show()

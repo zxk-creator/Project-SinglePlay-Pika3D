@@ -18,7 +18,7 @@ using PK;
 ///   6. 若开启 bakeToToon：把材质经 ShaderUtil 烘焙成 UTS（Unity Toon Shader）卡通材质
 ///      （颜色遮罩烤进 _MainTex，替换原材质）
 ///
-/// ─── 使用方式 ———
+/// 使用方式
 /// 把本脚本挂到角色 GameObject 上，在 Inspector 拖入 bonesRoot（男女共用同一骨架）。
 /// 性别和 NPC 标记由外部所有者直接注入；本类不再查找 CharacterBase。
 /// 本类仅负责装备的渲染显示，初始装备、穿戴/脱下决策全部由 InventorySystem
@@ -33,13 +33,13 @@ using PK;
 /// </summary>
 public class Equip : MonoBehaviour
 {
-    [Tooltip("骨架根（男女共用同一骨架，Inspector 手动赋值）")]
+    [Tooltip("骨架根（男女共用同一骨架，记得赋值的是Hierarchy里面的）")]
     public Transform bonesRoot;
 
-    [Header("外部注入")]
-    [Tooltip("由 LocalPlayer / NPC 在初始化时直接赋值。Equip 不再自动查找 CharacterBase。")]
+
+    [Tooltip("由 LocalPlayer / NPC 在初始化时直接赋值。Equip 不自动查找 CharacterBase。")]
     public bool isGirl = true;
-    [Tooltip("由角色所有者注入。NPC 不参与玩家图层重设。")]
+    [Tooltip("由角色所有者注入。")]
     public bool isNPC;
 
     [Header("女性默认着装")]
@@ -72,10 +72,6 @@ public class Equip : MonoBehaviour
     [Header("网格合体（复刻原版 CombineMesh.SkinnedMeshCombiner）")]
     [Tooltip("把已穿戴的部位合并成一个 SkinnedMeshRenderer：只合并网格与骨骼，每个部件保留自己的材质（不做贴图图集）。解决模块之间接缝、动画裂缝、光照不一致的问题")]
     public bool combineMeshes = true;
-
-    // ═══════════════════════════════════════════════════════
-    //  原版挂点表（AvatarExtension.BoneRoot + AvatarLoadStatus.AddEquipBoneAndAnimation）
-    // ═══════════════════════════════════════════════════════
 
     /// <summary>各部位要搬到角色骨骼上的挂点根名字</summary>
     private static readonly Dictionary<EClothType, string> SlotMountBone = new Dictionary<EClothType, string>
@@ -116,16 +112,8 @@ public class Equip : MonoBehaviour
         return FindChildRecursive(root, boneName);
     }
 
-    // ═══════════════════════════════════════════════════════
-    //  Public 事件
-    // ═══════════════════════════════════════════════════════
-
     /// <summary>换装完成通知（CharacterAnimation 用它重建衣服动画覆盖，帧末统一触发）</summary>
     public event System.Action OnEquipChanged;
-
-    // ═══════════════════════════════════════════════════════
-    //  Public 方法
-    // ═══════════════════════════════════════════════════════
 
     /// <summary>
     /// 设定性别并按该性别恢复默认着装。
@@ -140,7 +128,7 @@ public class Equip : MonoBehaviour
     }
 
     /// <summary>
-    /// 穿上布料。由 clothType 决定部位、prefabPath 决定模型。
+    /// 穿上衣服。由 clothType 决定部位、prefabPath 决定模型。
     /// 若布料带 conflictPart，则对应部位的布料不渲染。
     /// </summary>
     public void Wear(ClothBase newCloth)
@@ -414,6 +402,37 @@ public class Equip : MonoBehaviour
         EClothType.SHOE,
     };
 
+    /// <summary>骨架相对角色根的向下偏移，对齐地面用</summary>
+    private const float SkeletonGroundOffset = 0.126f;
+
+    /// <summary>
+    /// 骨架归一化统一由换装系统负责（原来 CharacterBase / NetPlayer / ChangeAvatarCharacter
+    /// 各写了一份，逻辑完全相同）。放在 Awake：它早于任何 Start 里的
+    /// SetGender / ApplyDefaultOutfit，即早于任何骨骼被挂上去之前。
+    /// 依赖 bonesRoot 已在 Inspector 里赋好。
+    /// </summary>
+    protected virtual void Awake()
+    {
+        NormalizeSkeleton();
+    }
+
+    /// <summary>
+    /// 骨架是预先放在 prefab 里的固定子节点，但它的局部坐标不受代码控制
+    /// （拖进来时 Unity 可能保留世界坐标，编辑器里也可能被误动）。
+    /// 这里拉回正确位置：局部零位，再往下挪 SkeletonGroundOffset 对齐地面。
+    /// </summary>
+    public void NormalizeSkeleton()
+    {
+        if (bonesRoot == null)
+        {
+            Log.Error("[Equip] bonesRoot 没赋值，拉不回骨架位置");
+            return;
+        }
+        bonesRoot.localRotation = Quaternion.identity;
+        bonesRoot.localScale = Vector3.one;
+        bonesRoot.localPosition = new Vector3(0f, -SkeletonGroundOffset, 0f);
+    }
+
     protected virtual void Start()
     {
         equipRoot = new GameObject("_EquipRoot").transform;
@@ -433,6 +452,7 @@ public class Equip : MonoBehaviour
         if (meshDirty)
         {
             meshDirty = false;
+            WeldBottomStocking(0.01f);
             RebuildCombined();
         }
         else if (combineMeshes != lastCombineToggle)
@@ -951,8 +971,6 @@ public class Equip : MonoBehaviour
     /// </summary>
     private void BakeMaterialsToToon(SkinnedMeshRenderer smr)
     {
-        if (smr == null) return;
-
         Material[] srcMats = smr.sharedMaterials;
         Material[] newMats = new Material[srcMats.Length];
         int bakedCount = 0;
@@ -1022,7 +1040,7 @@ public class Equip : MonoBehaviour
                 return;
             }
 
-            // ── 第一遍：筛选可合体的部件（blendshape / 无网格 / 无权重 / 骨骼未绑全的部件保持独立）──
+            // 第一遍：筛选可合体的部件（blendshape / 无网格 / 无权重 / 骨骼未绑全的部件保持独立）
             var sources = new List<SkinnedMeshRenderer>();
             foreach (SkinnedMeshRenderer smr in allSmrs)
             {
@@ -1050,7 +1068,7 @@ public class Equip : MonoBehaviour
                 return;
             }
 
-            // ── 第二遍：拼接网格数据 ──
+            // 第二遍：拼接网格数据
             var vertices = new List<Vector3>();
             var normals = new List<Vector3>();
             var tangents = new List<Vector4>();
@@ -1131,7 +1149,7 @@ public class Equip : MonoBehaviour
                 }
             }
 
-            // ── 创建合体渲染器 ──
+            // 创建合体渲染器 
             GameObject go = new GameObject("_CombinedAvatar");
             go.transform.SetParent(equipRoot, false);
             go.layer = 6; // player
@@ -1157,7 +1175,7 @@ public class Equip : MonoBehaviour
             combined.sharedMaterials = materials.ToArray(); // 保留各部件材质实例，不做合并
             combined.updateWhenOffscreen = true; // 动画中持续更新包围盒，避免被裁剪
 
-            // ── 关键：合体渲染器必须处在【世界单位变换】下 ──
+            // 关键：合体渲染器必须处在【世界单位变换】下
             // 蒙皮结果是  R⁻¹ · rootBone.worldToLocal · Σ(w_i · bone_i.localToWorld · bindpose_i · v)
             // 逐部件渲染时，R 就是该 SMR 自己的 localToWorld、rootBone 是同一根骨骼，
             // bindpose 也是按此烘焙的 —— 两项抵消，顶点落在正确位置。
@@ -1214,10 +1232,141 @@ public class Equip : MonoBehaviour
         return list;
     }
 
-    // ═══════════════════════════════════════════════════════
-    //  内部数据结构
-    // ═══════════════════════════════════════════════════════
+    private Mesh _bakedCache;
 
+
+    private void OnDrawGizmosSelected()
+    {
+        if (_bakedCache == null) _bakedCache = new Mesh();
+        Gizmos.color = Color.green;
+
+        foreach (EClothType slot in new[] { EClothType.BOTTOM, EClothType.STOCKING })
+        {
+            var smrs = new List<SkinnedMeshRenderer>();
+            if (activeSmrs.TryGetValue(slot, out var main) && main != null) smrs.Add(main);
+            if (activeSmrExtras.TryGetValue(slot, out var extras) && extras != null)
+                foreach (var go in extras)
+                    if (go != null) { var s = go.GetComponent<SkinnedMeshRenderer>(); if (s != null) smrs.Add(s); }
+
+            foreach (var smr in smrs)
+            {
+                if (smr.sharedMesh == null) continue;
+
+                smr.BakeMesh(_bakedCache, true);
+                var verts = _bakedCache.vertices;
+                var m = smr.transform.localToWorldMatrix;
+
+                for (int i = 0; i < verts.Length; i++)
+                {
+                    Vector3 wp = m.MultiplyPoint3x4(verts[i]);
+                    Gizmos.DrawSphere(wp, 0.01f);
+#if UNITY_EDITOR
+                    if (verts.Length <= 300)
+                        UnityEditor.Handles.Label(wp + Vector3.up * 0.02f, i.ToString());
+#endif
+                }
+            }
+        }
+    }
+
+    // 合并Bottom和Stocking的顶点
+    private void WeldBottomStocking(float threshold = 0.001f)
+    {
+        if (!activeSmrs.TryGetValue(EClothType.BOTTOM, out var bottomSmr) || bottomSmr == null) return;
+        if (!activeSmrs.TryGetValue(EClothType.STOCKING, out var stockSmr) || stockSmr == null) return;
+
+        var bMesh = bottomSmr.sharedMesh;
+        var sMesh = stockSmr.sharedMesh;
+        if (bMesh == null || sMesh == null) return;
+
+        bMesh = Instantiate(bMesh); bottomSmr.sharedMesh = bMesh;
+        sMesh = Instantiate(sMesh); stockSmr.sharedMesh = sMesh;
+
+        var bVerts = bMesh.vertices;
+        var sVerts = sMesh.vertices;
+        var bWeights = bMesh.boneWeights;
+        var sWeights = sMesh.boneWeights;
+
+        var bBones = bottomSmr.bones;
+        var sBones = stockSmr.bones;
+
+        // Transform: 各自索引
+        var bBoneToIdx = new Dictionary<Transform, int>();
+        var sBoneToIdx = new Dictionary<Transform, int>();
+        for (int i = 0; i < bBones.Length; i++) if (bBones[i] != null) bBoneToIdx[bBones[i]] = i;
+        for (int i = 0; i < sBones.Length; i++) if (sBones[i] != null) sBoneToIdx[sBones[i]] = i;
+
+        Matrix4x4 sToB = bottomSmr.transform.worldToLocalMatrix * stockSmr.transform.localToWorldMatrix;
+        float sqr = threshold * threshold;
+
+        for (int i = 0; i < bVerts.Length; i++)
+        {
+            Vector3 bp = bVerts[i];
+            for (int j = 0; j < sVerts.Length; j++)
+            {
+                Vector3 sp = sToB.MultiplyPoint3x4(sVerts[j]);
+                if ((bp - sp).sqrMagnitude > sqr) continue;
+
+                // 用 Transform 为 key 做平均
+                var avg = new Dictionary<Transform, float>();
+                AccumulateBW(avg, bBones, bWeights[i]);
+                AccumulateBW(avg, sBones, sWeights[j]);
+
+                var list = new List<KeyValuePair<Transform, float>>(avg);
+                list.Sort((a, b) => b.Value.CompareTo(a.Value));
+
+                // 各自映射回自己的索引空间
+                bWeights[i] = MakeBW(list, bBoneToIdx);
+                sWeights[j] = MakeBW(list, sBoneToIdx);
+            }
+        }
+
+        bMesh.boneWeights = bWeights;
+        sMesh.boneWeights = sWeights;
+    }
+
+    private static void AccumulateBW(Dictionary<Transform, float> dict, Transform[] bones, BoneWeight bw)
+    {
+        void Add(int idx, float w)
+        {
+            if (w <= 0f || idx < 0 || idx >= bones.Length) return;
+            var t = bones[idx];
+            if (t == null) return;
+            dict.TryGetValue(t, out var c);
+            dict[t] = c + w;
+        }
+        Add(bw.boneIndex0, bw.weight0);
+        Add(bw.boneIndex1, bw.weight1);
+        Add(bw.boneIndex2, bw.weight2);
+        Add(bw.boneIndex3, bw.weight3);
+    }
+
+    private static BoneWeight MakeBW(List<KeyValuePair<Transform, float>> sorted, Dictionary<Transform, int> boneToIdx)
+    {
+        float total = 0f;
+        int n = Mathf.Min(4, sorted.Count);
+        for (int i = 0; i < n; i++) total += sorted[i].Value;
+        if (total <= 0f) return new BoneWeight();
+
+        var r = new BoneWeight();
+        int w = 0;
+        for (int i = 0; i < n && w < 4; i++)
+        {
+            if (!boneToIdx.TryGetValue(sorted[i].Key, out int idx)) continue;
+            float weight = sorted[i].Value / total;
+            switch (w)
+            {
+                case 0: r.boneIndex0 = idx; r.weight0 = weight; break;
+                case 1: r.boneIndex1 = idx; r.weight1 = weight; break;
+                case 2: r.boneIndex2 = idx; r.weight2 = weight; break;
+                case 3: r.boneIndex3 = idx; r.weight3 = weight; break;
+            }
+            w++;
+        }
+        return r;
+    }
+
+    //  内部数据结构
     [System.Serializable]
     public struct SlotColors
     {

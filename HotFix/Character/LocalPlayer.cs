@@ -24,6 +24,13 @@ public class LocalPlayer : CharacterBase, IInputAcceptable, IControlable
     // 玩家死亡的时候创建的，用于屏幕变灰白
     // private Volume deathVolume;
 
+    // 碰撞收集结果
+    private List<(MeshCollider collider, Bounds bounds)> entries = new List<(MeshCollider collider, Bounds bounds)>();
+    private float timer = 0;
+    // 距离死区阈值
+    public float enableRadius = 30.0f;
+    public float disableRadius = 40.0f;
+
     private void Awake()
     {
         if (equipSystem == null) equipSystem = GetComponentInChildren<Equip>();
@@ -33,22 +40,10 @@ public class LocalPlayer : CharacterBase, IInputAcceptable, IControlable
         SetRigidbodyKinematic(true);
 
         animation = GetComponent<CharacterAnimation>();
-
-        // 游戏开始时，取消骨骼的碰撞，原本预留用于布娃娃的，但是实际上没必要
-        Transform root = equipSystem.bonesRoot;
-        foreach (Collider c in root.GetComponentsInChildren<Collider>(true))
-            c.enabled = false;
-        foreach (Rigidbody r in root.GetComponentsInChildren<Rigidbody>(true))
-        {
-            r.detectCollisions = false;
-            r.isKinematic = true;
-        }
     }
 
     protected override void Start()
     {
-        // 建骨架之前就要定好性别：CharacterBase.Start 是按 isGirl 挑骨架 prefab 的，
-        // 骨架一旦 Instantiate 出来就改不了，所以读档必须在 base.Start() 之前套用
         if (playerSaveData != null)
             isGirl = playerSaveData.isGirl;
         equipSystem.SetGender(isGirl);
@@ -104,7 +99,6 @@ public class LocalPlayer : CharacterBase, IInputAcceptable, IControlable
         lastSynchronizeTime += Time.deltaTime;
         if (lastSynchronizeTime >= 0.1)
         {
-            // 必须清零，否则时间只增不减，之后每帧都会发一次
             lastSynchronizeTime = 0f;
 
             // 发送位置同步信号
@@ -118,6 +112,14 @@ public class LocalPlayer : CharacterBase, IInputAcceptable, IControlable
             // 1: 高频丢了无所谓的，像位置同步这样连续的
             Context.net.Send(msg, 1, LiteNetLib.DeliveryMethod.Sequenced);
         }
+
+        // 收集场景MeshCollider信息
+        timer += Time.deltaTime;
+        if (timer < 0.2f) return;
+
+        timer = 0;
+        Vector3 center = transform.position;
+        ColliderUtil.Tick(entries, center, enableRadius, disableRadius);
     }
 
     void LateUpdate()
@@ -314,6 +316,16 @@ public class LocalPlayer : CharacterBase, IInputAcceptable, IControlable
         bagPanel.Show();
     }
 
+    // 收集当前场景的碰撞
+    public void CollectMeshCollider()
+    {
+        entries = ColliderUtil.CollectAll(-1);
+        ColliderUtil.Tick(entries, transform.position, enableRadius, disableRadius);
+
+        // 计时器清零，让 Update 里第一次 Tick 从这一刻开始重新算
+        timer = 0f;
+    }
+
     public static void RegisterDeathAndReviveEvents(IDeathAndRevive who)
     {
         if (!deathAndReviveCallbacks.Contains(who))
@@ -347,4 +359,19 @@ public class LocalPlayer : CharacterBase, IInputAcceptable, IControlable
         }
     }
 
+    private void OnDrawGizmosSelected()
+    {
+        Vector3 center = transform.position;
+
+        Gizmos.color = Color.green;
+        Gizmos.DrawWireSphere(center, enableRadius);
+
+        Gizmos.color = new Color(1f, 0.5f, 0f);
+        Gizmos.DrawWireSphere(center, disableRadius);
+    }
+
+    void OnDestroy()
+    {
+        gameMainPanel.Hide();
+    }
 }

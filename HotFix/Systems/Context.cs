@@ -33,6 +33,28 @@ public static class Context
         public static Clothes clothes;
         // {分类tag: 类型}
         public static Dictionary<string, List<ItemBase>> allItems;
+
+        /// <summary>
+        /// 通过ID寻找物品类型，如果你知道id一定是某个类型，可以强制转换
+        /// </summary>
+        /// <returns>返回这个物品的拷贝</returns>
+        public static ItemBase GetItemCopyById(int id)
+        {
+            foreach (var kv in allItems)
+            {
+                var list = kv.Value;
+                if (list == null) continue;
+
+                for (int i = 0; i < list.Count; i++)
+                {
+                    var item = list[i];
+                    if (item != null && item.id == id)
+                        return item.GetACopy();
+                }
+            }
+
+            return null;
+        }
     }
 
     public static bool bIsInitialized = false;

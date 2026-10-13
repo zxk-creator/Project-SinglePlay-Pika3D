@@ -1,4 +1,4 @@
-﻿using LiteNetLib.Utils;
+using LiteNetLib.Utils;
 using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
@@ -55,6 +55,8 @@ public class HairBase : ClothBase
 
     public override void Deserialize(NetDataReader br)
     {
+        // base 就是 ClothBase.Deserialize，公共字段 + ClothBase 的字段已经在里面查过数据库补好了，
+        // 这里只读 HairBase 自己多出来的那几个字段，不要再查一次。
         base.Deserialize(br);
         HairColor = new Color(br.GetFloat(), br.GetFloat(), br.GetFloat(), br.GetFloat());
     }
