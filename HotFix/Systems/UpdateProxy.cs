@@ -16,6 +16,10 @@ public class UpdateProxy : MonoBehaviour
     private Dictionary<Action, float> delayedTask = new Dictionary<Action, float>(5);
     private List<Action> keysSnapshot = new List<Action>(5);
 
+    // 下一帧任务
+    private List<Action> nextFrameTasks = new List<Action>(5);
+    private List<Action> nextFrameSnapshot = new List<Action>(5);
+
     void Update()
     {
         keysSnapshot.Clear();
@@ -54,6 +58,18 @@ public class UpdateProxy : MonoBehaviour
                     delayedTask.Remove(key);
                 }
                 else delayedTask[key] = time;
+            }
+        }
+
+        // 下一帧完成的任务立刻完成
+        if (nextFrameTasks.Count > 0)
+        {
+            nextFrameSnapshot.Clear();
+            nextFrameSnapshot.AddRange(nextFrameTasks);
+            nextFrameTasks.Clear();
+            for (int i = 0; i < nextFrameSnapshot.Count; i++)
+            {
+                nextFrameSnapshot[i]?.Invoke();
             }
         }
     }
@@ -108,6 +124,21 @@ public class UpdateProxy : MonoBehaviour
         {
             delayedTask.Add(newAct, delayTime);
         }
+    }
+
+    /// <summary>
+    /// 推迟到下一帧立刻完成：本帧只入队，下一帧Update开头统一执行。
+    /// </summary>
+    public void RegisterNextFrameTask(Action newAct)
+    {
+        if (newAct == null) return;
+
+        for (int i = 0; i < nextFrameTasks.Count; i++)
+        {
+            if (nextFrameTasks[i] == newAct) return;
+        }
+
+        nextFrameTasks.Add(newAct);
     }
 
     public void DestoryTask(Action targetAction)

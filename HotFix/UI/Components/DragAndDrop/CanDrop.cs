@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
@@ -18,31 +18,35 @@ public class CanDrop : MonoBehaviour, IDropRecevier
         {
             case EOperateLocation.InventoryArea:
                 {
-                    if (!inv.RemoveFromBag(item)) return false;
-                    DropToGround(item);
-                    inv.bagPanel?.RefreshEquip();
-                    Log.Info("已丢弃物品到地面：" + item.itemName);
-                    return true;
+                    // TODO: 需要更新API
+                    // if (!inv.RemoveFromBag(item)) return false;
+                    // DropToGround(item);
+                    // inv.bagPanel?.RefreshEquip();
+                    // Log.Info("已丢弃物品到地面：" + item.itemName);
+                    return false;
                 }
             case EOperateLocation.EquipArea:
                 {
                     if (item is ToolBase tool)
                     {
-                        if (!ReferenceEquals(inv.currentEquipedTool, tool)) return false;
-                        inv.RemoveTool();
-                        DropToGround(item);
-                        inv.bagPanel?.RefreshEquip();
-                        Log.Info("已卸下并丢弃到地面：" + item.itemName);
-                        return true;
+                        // TODO: 需要更新API
+                        // if (!ReferenceEquals(inv.currentEquipedTool, tool)) return false;
+                        // inv.RemoveTool();
+                        // DropToGround(item);
+                        // inv.bagPanel?.RefreshEquip();
+                        // Log.Info("已卸下并丢弃到地面：" + item.itemName);
+                        return false;
                     }
 
                     EClothType slot = FindEquipSlot(inv, item);
                     if (slot == EClothType.NONE) return false;
-                    inv.RemoveCloth(slot);
-                    DropToGround(item);
-                    inv.bagPanel?.RefreshEquip();
-                    Log.Info("已脱下装备并丢弃到地面：" + item.itemName);
-                    return true;
+
+                    // TODO: 需要更新API
+                    // inv.RemoveCloth(slot);
+                    // DropToGround(item);
+                    // inv.bagPanel?.RefreshEquip();
+                    // Log.Info("已脱下装备并丢弃到地面：" + item.itemName);
+                    return false;
                 }
             case EOperateLocation.BagSlot:
                 {
@@ -65,8 +69,9 @@ public class CanDrop : MonoBehaviour, IDropRecevier
 
     private void DropToGround(ItemBase item)
     {
-        LocalPlayer player = Context.localPlayer;
-        Vector3 position = player.transform.position + player.transform.forward * 2f + Vector3.up * 0.2f;
-        InventorySystem.TryGenerateDropItem(item, position);
+        // TODO: 需要更新API
+        // LocalPlayer player = Context.localPlayer;
+        // Vector3 position = player.transform.position + player.transform.forward * 2f + Vector3.up * 0.2f;
+        // InventorySystem.TryGenerateDropItem(item, position);
     }
 }

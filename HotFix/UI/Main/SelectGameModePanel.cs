@@ -22,7 +22,6 @@ public class SelectGameModePanel : UIBase
             Context.net.StartLocalPlay(sv);
             Hide();
         });
-
         
         multiPlay.onClick.AddListener(() =>
         {

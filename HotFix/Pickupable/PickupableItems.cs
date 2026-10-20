@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 using PK;
 
 public class PickupableItems : MonoBehaviour
@@ -39,22 +39,23 @@ public class PickupableItems : MonoBehaviour
         LocalPlayer player = Context.localPlayer;
         if (player == null || player.inventory == null) return;
 
-        ItemBase remain = player.inventory.TryPutIntoBag(item);
-        if (remain == null)
-        {
-            Log.Info("成功装入背包，掉落物已销毁：" + item.itemName);
-            Destroy(gameObject);
-        }
-        else if (ReferenceEquals(remain, item))
-        {
-            Log.Info("背包已满，无法装入掉落物：" + item.itemName);
-        }
-        else
-        {
-            Log.Info("背包空间不足，只装入了一部分：" + item.itemName + "，剩余" + remain.currentStackCount + "个");
-            item = remain;
-            UpdateSprite();
-        }
+        // TODO: 需要更新API
+        // ItemBase remain = player.inventory.TryPutIntoBag(item);
+        // if (remain == null)
+        // {
+        //     Log.Info("成功装入背包，掉落物已销毁：" + item.itemName);
+        //     Destroy(gameObject);
+        // }
+        // else if (ReferenceEquals(remain, item))
+        // {
+        //     Log.Info("背包已满，无法装入掉落物：" + item.itemName);
+        // }
+        // else
+        // {
+        //     Log.Info("背包空间不足，只装入了一部分：" + item.itemName + "，剩余" + remain.currentStackCount + "个");
+        //     item = remain;
+        //     UpdateSprite();
+        // }
     }
 
     private void UpdateSprite()

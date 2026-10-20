@@ -48,6 +48,19 @@ public class ToolBase : ItemBase
         return copy;
     }
 
+    public override bool IsSameAs(ItemBase item)
+    {
+        if (!base.IsSameAs(item)) return false;
+
+        var other = item as ToolBase;
+        if (other == null) return false;
+
+        return toolType == other.toolType
+            && currentDurability == other.currentDurability
+            && level == other.level
+            && maxDurability == other.maxDurability;
+    }
+
     public override void Serialize(NetDataWriter bw)
     {
         base.Serialize(bw);

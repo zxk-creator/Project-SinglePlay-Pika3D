@@ -8,11 +8,11 @@ using UnityEngine;
 /// 骨架（Animator）不在接口里：CharacterAnimation 自己在 Inspector 上赋值，
 /// 不再通过宿主去找，所以谁带着它都行。
 /// </summary>
-public interface ICharacterAnimationOwner
+public interface ICharacter
 {
-    /// <summary>性别：决定用哪套动画控制器、待机小动作池、衣服动画目录</summary>
+    /// <summary>性别决定用哪套动画控制器,待机动作池,衣服动画目录</summary>
     bool isGirl { get; set; }
 
-    /// <summary>当前移动/动作状态，决定播哪个动画。由宿主按自己的规则算好推过来（见 CharacterBase.UpdateMoveState）</summary>
+    /// <summary>当前动作状态，决定播哪个动画。由宿主按自己的规则算好推过来（见 CharacterBase.UpdateMoveState）</summary>
     EAnimationState moveState { get; set; }
 }

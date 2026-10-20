@@ -20,6 +20,19 @@ public class FoodBase : ItemBase
     // 毒性（正数，直接减去CharacterProperty中）
     public float position = 0f;
 
+    public override bool IsSameAs(ItemBase item)
+    {
+        if (!base.IsSameAs(item)) return false;
+
+        var other = item as FoodBase;
+        if (other == null) return false;
+
+        return durability == other.durability
+            && position == other.position
+            && addedFoodValue == other.addedFoodValue
+            && attenuate == other.attenuate;
+    }
+
     public override void Serialize(NetDataWriter bw)
     {
         base.Serialize(bw);

@@ -35,7 +35,7 @@ public class CharacterProperty : MonoBehaviour, IDeathAndRevive
     private const float MINING_COST = 1f;
     private const float CUT_TREE_COST = 1f;
 
-    // sanity（理智）：独立属性，最大100，不参与瓜分生命条
+    // 理智独立属性，最大100，不参与瓜分生命条
     private const float SANITY_MAX_VALUE = 100f;
     // 每帧减少的速率（每秒量）
     private const float SANITY_DECAY_PER_SECOND = 0.5f;

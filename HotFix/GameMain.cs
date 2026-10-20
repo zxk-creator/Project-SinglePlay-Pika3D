@@ -1,11 +1,7 @@
 using UnityEngine;
 using System.Collections.Generic;
 using FunnyChineseName;
-using UnityEngine.UI;
 using UnityEngine.EventSystems;
-using UnityEngine.Rendering.Universal;
-using UnityEngine.SceneManagement;
-using UnityEngine.Rendering;
 using System.IO;
 using UnityEngine.AddressableAssets;
 using UnityEngine.UIElements;
@@ -19,7 +15,6 @@ public static class GameMain
     // 游戏开始的时候调用这个来初始化一切，否则报错。挂到某个GameObject身上即可
     public static void StartGame()
     {
-        
         // 防止重复初始化
         if (Context.bIsInitialized) return;
         Context.bIsInitialized = true;
@@ -49,6 +44,7 @@ public static class GameMain
         scenes = new Dictionary<ESceneType, string>
         {
             { ESceneType.MAIN_MENU, "Main" },
+            { ESceneType.TEST, "ToonShader"},
             { ESceneType.DEFAULT, "Hotel" },
             { ESceneType.CITY, "GTAIII" }
         };

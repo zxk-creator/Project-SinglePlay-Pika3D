@@ -13,18 +13,20 @@ public class DeathPanel : UIBase
         _MedkitRevive = GetTargetComponent<GameAcceptButton>("MedkitButton");
         _MedkitRevive.onClick.AddListener(MedkitRevive);
 
+        /*
         Time.timeScale = 0.3f;
         var animator = UIPrefab.GetComponent<Animator>();
         animator.speed = 1f / 0.3f;
+        */
     }
 
     private void Revive()
     {
-        Context.localPlayer.ReviveAtHome();
+        //Context.localPlayer.ReviveAtHome();
     }
 
     private void MedkitRevive()
     {
-        Context.localPlayer.Revive();
+        //Context.localPlayer.Revive();
     }
 }

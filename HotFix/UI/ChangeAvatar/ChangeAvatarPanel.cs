@@ -15,7 +15,7 @@ public class ChangeAvatarPanel : UIBase
         this.playerRef = playerRef;
         
         var parent = FindChildRecursive(UIPrefab.transform, "Content");
-        bool isGirl = Context.localPlayer.isGirl;
+        bool isGirl = Context.localPlayer.IsGirl;
         List<ChangeAvatarItemButton> targetButtons = isGirl ? femaleButtons : maleButtons;
         if (targetButtons.Count == 0)
         {

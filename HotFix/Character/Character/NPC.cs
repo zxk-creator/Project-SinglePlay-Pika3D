@@ -1,25 +1,32 @@
 using System.Collections;
 using System.Collections.Generic;
+using PKSv;
 using UnityEngine;
 
 public class NPC : CharacterBase
 {
     private string characterName = "NPC";
     private WorldSpaceName spaceName;
-    public InventorySystem inventory {get; private set;}
+    public SaveData saveData { get; private set; } = new SaveData();
 
-    private void Awake()
+    /// <summary>
+    /// 组件引用与初始化都在 CharacterBase 里，这里只做 NPC 专属标记。
+    /// </summary>
+    protected override void Awake()
     {
-        if (equipSystem == null) equipSystem = GetComponentInChildren<Equip>();
-        equipSystem.isGirl = isGirl;
         equipSystem.isNPC = true;
+        base.Awake();
     }
 
     protected override void Start()
     {
-        base.Start();
         equipSystem.isGirl = isGirl;
+
+        // 里面按顺序初始化 equipSystem 与 characterAnimation，必须先于穿衣服
+        base.Start();
+
         equipSystem.ApplyDefaultOutfit();
+
         var nameObj = ResourceHelp.LoadPrefab("WorldSpaceName");
         spaceName = nameObj.GetComponent<WorldSpaceName>();
         spaceName.characterName = characterName;
@@ -27,8 +34,6 @@ public class NPC : CharacterBase
         nameObj.transform.SetPositionAndRotation(gameObject.transform.position, gameObject.transform.rotation);
         nameObj.transform.Translate(Vector3.up * 2f, Space.World);
         nameObj.transform.SetParent(gameObject.transform);
-
-        inventory = new InventorySystem(equipSystem, this);
     }
 
     public void SetName(string newNames)
@@ -44,8 +49,7 @@ public class NPC : CharacterBase
 
     public void ApplyCloth(CharacterEquipCollection cloths)
     {
-        if (inventory == null) inventory = new InventorySystem(GetComponent<Equip>(), this);
-        inventory.SetCharacterEquips(cloths);
+        // TODO: 由于API发生重大变更，NPC现在没有衣服可以穿
     }
 
     public override (string name, string description, string iconPath, EInteractableType interactableType, Actor selfRef) OnRaycastHit()

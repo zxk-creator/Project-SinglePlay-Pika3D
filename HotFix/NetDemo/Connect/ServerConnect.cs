@@ -22,6 +22,9 @@ public class ServerConnect : MonoBehaviour
 
     private Action onConnectedSuccess;
 
+    // 缓存的发送缓冲区
+    private readonly NetDataWriter sendWriter = new NetDataWriter();
+
     /// <summary>
     /// 传入SaveData，实则是仅读取他的世界名称字段，其他的用不到
     /// </summary>
@@ -73,8 +76,6 @@ public class ServerConnect : MonoBehaviour
         serverConnect?.Stop();
         isRunning = false;
         roomMgr?.RemoveAllPlayer();
-        // 必须注销游戏内时钟：updateProxy 持有 TickTime 委托，会拽着 RoomMgr 不放。
-        // 不注销的话时钟会一直跑，RoomMgr（连同 currentWorld）也回收不掉。
         roomMgr?.StopTimer();
     }
 
@@ -90,6 +91,295 @@ public class ServerConnect : MonoBehaviour
         processor.SubscribeNetSerializable<LoginRequest, NetPeer>(OnLoginRequest);
         processor.SubscribeNetSerializable<ClientEnterNewScene, NetPeer>(OnClientEnterNewScene);
         processor.SubscribeNetSerializable<LocationSynchronize, NetPeer>(OnLocationSync);
+        processor.SubscribeNetSerializable<ServerPlayerDeath, NetPeer>(OnPlayerDeath);
+        processor.SubscribeNetSerializable<Commands, NetPeer>(OnCommandReceived);
+        processor.SubscribeNetSerializable<ClientEquipClothIntent, NetPeer>(OnClientEquipACloth);
+        processor.SubscribeNetSerializable<ClientTakeOffClothIntent, NetPeer>(OnClientTakeOffACloth);
+        processor.SubscribeNetSerializable<ClientEquipToolIntent, NetPeer>(OnClientEquipATool);
+        processor.SubscribeNetSerializable<ClientTakeOffBagIntent, NetPeer>(OnClientTakeOffABag);
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    ///////////////////////////////////////////////////换装开始/////////////////////////////////////////////////////////
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    
+    private void OnClientTakeOffACloth(ClientTakeOffClothIntent req, NetPeer peer)
+    {
+        var player = roomMgr.FindPlayerByPeer(peer);
+        if (player == null)
+        {
+            Log.Error("服务端列表里没有这个玩家！这不该发生！");
+            return;
+        }
+
+        var saveData = player.playerData;
+
+        // 尝试卸下，内部会尝试放回背包
+        bool success = saveData.RemoveCloth(req.targetSlot);
+
+        // 无论成功与否，都发送最新状态，确保客户端状态与服务器一致
+        SendInventorySync(player, peer);
+
+        if (success)
+            BroadcastInventorySyncToOthers(player);
+    }
+
+    private void OnClientEquipACloth(ClientEquipClothIntent req, NetPeer peer)
+    {
+        var player = roomMgr.FindPlayerByPeer(peer);
+        if (player == null)
+        {
+            Log.Error("服务端列表里没有这个玩家！这不该发生！");
+            return;
+        }
+
+        var saveData = player.playerData;
+
+        // 校验客户端发的物品是否合法
+        if (req.clothToEquip == null)
+        {
+            // 非法请求的话发回最新状态覆盖客户端的错误
+            SendInventorySync(player, peer);
+            return;
+        }
+
+        // 校验玩家真的拥有这件衣服吗，按id在背包里找
+        ClothBase actualCloth = null;
+        foreach (var item in saveData.GetAllItems())
+        {
+            if (item is ClothBase c && c.id == req.clothToEquip.id)
+            {
+                actualCloth = c;
+                break;
+            }
+        }
+
+        // 客户端数据不同步，发正确数据覆盖
+        if (actualCloth == null)
+        {
+            SendInventorySync(player, peer);
+            return;
+        }
+
+        // 尝试换装，内部会自动处理旧装备放回背包
+        bool success = saveData.ChangeCloth(actualCloth);
+        if (!success)
+        {
+            SendInventorySync(player, peer);
+            return;
+        }
+
+        // 成功：同步给自己、广播给别人
+        SendInventorySync(player, peer);
+        BroadcastInventorySyncToOthers(player);
+    }
+
+    private void OnClientEquipATool(ClientEquipToolIntent req, NetPeer peer)
+    {
+        var player = roomMgr.FindPlayerByPeer(peer);
+        if (player == null)
+        {
+            Log.Error("服务端列表里没有这个玩家！这不该发生！");
+            return;
+        }
+
+        var saveData = player.playerData;
+
+        if (req.toolToEquip == null)
+        {
+            // 传 null 表示卸下手上的工具，内部会把工具放回背包
+            saveData.SetTool(null);
+            SendInventorySync(player, peer);
+            BroadcastInventorySyncToOthers(player);
+            return;
+        }
+
+        ToolBase actualTool = null;
+        foreach (var item in saveData.GetAllItems())
+        {
+            if (item is ToolBase t && t.id == req.toolToEquip.id)
+            {
+                actualTool = t;
+                break;
+            }
+        }
+
+        if (actualTool == null)
+        {
+            SendInventorySync(player, peer);
+            return;
+        }
+
+        // 尝试装备，内部会把旧工具放回背包
+        bool success = saveData.SetTool(actualTool);
+        if (!success)
+        {
+            SendInventorySync(player, peer);
+            return;
+        }
+
+        SendInventorySync(player, peer);
+        BroadcastInventorySyncToOthers(player);
+    }
+
+    private void OnClientTakeOffABag(ClientTakeOffBagIntent req, NetPeer peer)
+    {
+        var player = roomMgr.FindPlayerByPeer(peer);
+        if (player == null)
+        {
+            Log.Error("服务端列表里没有这个玩家！这不该发生！");
+            return;
+        }
+
+        var saveData = player.playerData;
+
+        if (saveData.equipedBag != null && saveData.TryPutIntoBag(saveData.equipedBag) == null)
+            saveData.equipedBag = null;
+
+        SendInventorySync(player, peer);
+        BroadcastInventorySyncToOthers(player);
+    }
+
+    // 客户端不会发送背包物品同步请求
+    // 下面都是辅助方法
+    private void SendInventorySync(NetPlayerData player, NetPeer targetPeer)
+    {
+        var sync = new ServerInventorySync
+        {
+            playerName = player.playerName,
+            isGirl = player.playerData.isGirl,
+            equipedCloth = player.playerData.equipedCloth,
+            handSpace = player.playerData.handSpace,
+            equipedBag = player.playerData.equipedBag,
+            currentEquipedTool = player.playerData.currentEquipedTool
+        };
+
+        sendWriter.Reset();
+        processor.WriteNetSerializable(sendWriter, ref sync);
+        targetPeer.Send(sendWriter, 0, DeliveryMethod.ReliableOrdered);
+    }
+
+    private void BroadcastInventorySyncToOthers(NetPlayerData player)
+    {
+        var sync = new ServerInventorySync
+        {
+            playerName = player.playerName,
+            isGirl = player.playerData.isGirl,
+            equipedCloth = player.playerData.equipedCloth,
+            handSpace = player.playerData.handSpace,
+            equipedBag = player.playerData.equipedBag,
+            currentEquipedTool = player.playerData.currentEquipedTool
+        };
+
+        sendWriter.Reset();
+        processor.WriteNetSerializable(sendWriter, ref sync);
+
+        var others = roomMgr.GetAllPlayerNetPeers();
+        foreach (var p in others)
+        {
+            p.Send(sendWriter, 0, DeliveryMethod.ReliableOrdered);
+        }
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    ///////////////////////////////////////////////////换装结束/////////////////////////////////////////////////////////
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    
+    /// <summary>
+    /// 服务端收到客户端发来的命令执行请求
+    /// </summary>
+    private void OnCommandReceived(Commands commands, NetPeer peer)
+    {
+        var player = roomMgr.FindPlayerByPeer(peer);
+
+        string command = commands.command;
+        if (string.IsNullOrEmpty(command))
+        {
+            Log.Info("接收到了空或无效命令");
+            return;
+        }
+
+        string[] parts = command.Split(new[] { ' ', '\t' }, System.StringSplitOptions.RemoveEmptyEntries);
+
+        if (parts.Length == 0) return;
+
+        // 统一转小写
+        string cmd = parts[0].ToLower();
+
+        // TODO: 目前任何客户端都能执行命令，后续将会全部迁移到服务端
+        // TODO: 客户端发送命令，服务端执行后把结果以消息的形式传给客户端。
+        switch (cmd)
+        {
+            case "/kill":
+            {
+                    if (player == null)
+                    {
+                        Log.Error("找不到发命令的玩家");
+                        break;
+                    }
+                    // 发送死亡信号
+                    var msg = new ServerPlayerDeath
+                    {
+                        playerName = player.playerName,
+                        deathVelocity = Vector3.zero,
+                        deathAngularVelocity = Vector3.zero,
+                    };
+
+                    sendWriter.Reset();
+                    processor.WriteNetSerializable(sendWriter, ref msg);
+
+                    var peers = roomMgr.GetAllPlayerNetPeers();
+                    foreach (var p in peers)
+                        p.Send(sendWriter, 0, DeliveryMethod.ReliableOrdered);
+                    break;
+            }
+            case "/give":
+                {
+                    if (player == null)
+                    {
+                        Log.Error("找不到发命令的玩家");
+                        break;
+                    }
+
+                    // parts[0] 是 "/give"，parts[1] 是物品 ID
+                    if (parts.Length < 2 || !int.TryParse(parts[1], out int itemId))
+                    {
+                        Log.Info("命令格式错误，应为：/give <ItemId>");
+                        break;
+                    }
+
+                    // 查模板
+                    ItemBase newItem = Context.Item.GetItemCopyById(itemId);
+                    if (newItem == null)
+                    {
+                        Log.Info($"未找到ID为 {itemId} 的物品");
+                        break;
+                    }
+
+                    // 塞进玩家背包
+                    ItemBase remain = player.playerData.TryPutIntoBag(newItem);
+                    if (remain != null)
+                    {
+                        Log.Warn($"玩家 {player.playerName} 背包已满，无法放入 {newItem.itemName}");
+                        break;
+                    }
+
+                    // 同步背包状态
+                    SendInventorySync(player, peer);
+                    Log.Info($"已给予 {player.playerName} 物品：{newItem.itemName} (ID:{itemId})");
+                    break;
+                }
+            case "":
+                {
+                    
+                    break;
+                }
+            default:
+                {
+                    Log.Info("未知命令" + command);
+                    break;
+                }
+        }
     }
 
     // ---------- 连接事件 ----------
@@ -118,19 +408,36 @@ public class ServerConnect : MonoBehaviour
 
         var outMsg = new OtherPlayerLocationSync
         {
-            playerId = player.playerId,
+            playerName = player.playerName,
             location = msg.location,
             rotation = msg.rotation,
             currentAnimation = msg.currentAnimation,
         };
 
-        var w = new NetDataWriter();
-        processor.WriteNetSerializable(w, ref outMsg);
+        sendWriter.Reset();
+        processor.WriteNetSerializable(sendWriter, ref outMsg);
 
         // 只发给同场景的人：不同场景的人根本看不到他，发了也是白费流量
-        var others = GetScenePeers(player.scene, peer);
+        var others = roomMgr.GetScenePeers(player.scene, peer);
         foreach (var p in others)
-            p.Send(w, 1, DeliveryMethod.Sequenced);
+            p.Send(sendWriter, 1, DeliveryMethod.Sequenced);
+    }
+
+    private void OnPlayerDeath(ServerPlayerDeath death, NetPeer peer)
+    {
+        // 找到玩家，设置为死亡
+        var player = roomMgr.FindPlayerByPeer(peer);
+        if (player == null) return;
+
+        player.isDead = true;
+
+        // 广播给所有客户端
+        sendWriter.Reset();
+        processor.WriteNetSerializable(sendWriter, ref death);
+
+        var peers = roomMgr.GetAllPlayerNetPeers();
+        foreach (var p in peers)
+            p.Send(sendWriter, 0, DeliveryMethod.ReliableOrdered);
     }
 
     /// <summary>
@@ -151,13 +458,13 @@ public class ServerConnect : MonoBehaviour
         if (req.scene == ESceneType.MAIN_MENU)
         {
             // 回主菜单等价于退出游戏：通知同场景的人把他移除
-            var exitMsg = new PlayerExitGame { playerId = player.playerId };
+            var exitMsg = new ServerPlayerExitGame { playerName = player.playerName };
 
-            var w = new NetDataWriter();
-            processor.WriteNetSerializable(w, ref exitMsg);
+            sendWriter.Reset();
+            processor.WriteNetSerializable(sendWriter, ref exitMsg);
 
-            foreach (var p in GetScenePeers(fromScene, peer))
-                p.Send(w, 0, DeliveryMethod.ReliableOrdered);
+            foreach (var p in roomMgr.GetScenePeers(fromScene, peer))
+                p.Send(sendWriter, 0, DeliveryMethod.ReliableOrdered);
 
             // 移除玩家
             roomMgr.RemovePlayerByPeer(peer);
@@ -166,35 +473,21 @@ public class ServerConnect : MonoBehaviour
 
         // 换了场景：通知"原来场景"的人把他移除，通知"新场景"的人把他加进来。
         // 两边都要发，因为收到的人要按自己当前场景决定是移除还是生成。
-        var enterMsg = new OtherPlayerEnterNewScene { newPlayerData = player };
+        var enterMsg = new ServerOtherPlayerEnterNewScene { newPlayerData = player };
 
-        var w2 = new NetDataWriter();
-        processor.WriteNetSerializable(w2, ref enterMsg);
+        sendWriter.Reset();
+        processor.WriteNetSerializable(sendWriter, ref enterMsg);
 
         var targets = new List<NetPeer>();
         // 原场景的人：把他移除（但如果他只是从主菜单回来，那边原本就没人看到他，没人可发）
         if (fromScene != ESceneType.MAIN_MENU)
-            targets.AddRange(GetScenePeers(fromScene, peer));
+            targets.AddRange(roomMgr.GetScenePeers(fromScene, peer));
         // 新场景的人：把他生成出来
         if (player.scene != fromScene)
-            targets.AddRange(GetScenePeers(player.scene, peer));
+            targets.AddRange(roomMgr.GetScenePeers(player.scene, peer));
 
         foreach (var p in targets)
-            p.Send(w2, 0, DeliveryMethod.ReliableOrdered);
-    }
-
-    /// <summary>取指定场景里除 exclude 之外的所有玩家连接</summary>
-    private List<NetPeer> GetScenePeers(ESceneType scene, NetPeer exclude)
-    {
-        var result = new List<NetPeer>();
-        if (!roomMgr.roomAndPlayers.TryGetValue(scene, out var players)) return result;
-
-        foreach (var p in players)
-        {
-            if (p.clientConnect == exclude) continue;
-            result.Add(p.clientConnect);
-        }
-        return result;
+            p.Send(sendWriter, 0, DeliveryMethod.ReliableOrdered);
     }
 
     private void OnPeerConnected(NetPeer peer)
@@ -206,7 +499,7 @@ public class ServerConnect : MonoBehaviour
     {
         Debug.Log($"已断开: {peer}  原因={info.Reason}");
 
-        // 广播之前必须先拿到玩家数据（RemovePlayerByPeer 之后就从列表里没了）
+        // 广播之前必须先拿到玩家数据
         NetPlayerData player = roomMgr.FindPlayerByPeer(peer);
         if (player == null)
         {
@@ -214,15 +507,14 @@ public class ServerConnect : MonoBehaviour
             return;
         }
 
-        // 直接关窗口 / 掉线时不会有 EnterNewScene(MAIN_MENU)，
-        // 所以这里也要通知同场景的人把他移除，否则别人那边会一直留着他
-        var exitMsg = new PlayerExitGame { playerId = player.playerId };
+        // 直接关窗口掉线时不会有EnterNewScene，所以这里也要通知同场景的人把他移除，否则别人那边会一直留着他
+        var exitMsg = new ServerPlayerExitGame { playerName = player.playerName };
 
-        var w = new NetDataWriter();
-        processor.WriteNetSerializable(w, ref exitMsg);
+        sendWriter.Reset();
+        processor.WriteNetSerializable(sendWriter, ref exitMsg);
 
-        foreach (var p in GetScenePeers(player.scene, peer))
-            p.Send(w, 0, DeliveryMethod.ReliableOrdered);
+        foreach (var p in roomMgr.GetScenePeers(player.scene, peer))
+            p.Send(sendWriter, 0, DeliveryMethod.ReliableOrdered);
 
         roomMgr.RemovePlayerByPeer(peer);
     }
@@ -231,7 +523,6 @@ public class ServerConnect : MonoBehaviour
     {
         processor.ReadAllPackets(reader, peer);
     }
-
 
 
     // ---------- 消息订阅 ----------
@@ -246,9 +537,9 @@ public class ServerConnect : MonoBehaviour
         response.count = roomMgr.GetPlayerCount();
         response.playerNames = roomMgr.GetPlayerNames();
 
-        var w = new NetDataWriter();
-        processor.WriteNetSerializable(w, ref response);
-        peer.Send(w, 0, DeliveryMethod.ReliableOrdered);
+        sendWriter.Reset();
+        processor.WriteNetSerializable(sendWriter, ref response);
+        peer.Send(sendWriter, 0, DeliveryMethod.ReliableOrdered);
     }
 
     /// <summary>
@@ -269,58 +560,72 @@ public class ServerConnect : MonoBehaviour
                 // 说明有重名玩家，拒绝连接
                 var respond = new LoginResponse();
                 respond.serverResponse = LoginResponse.Status.REJECTED_SAME_NAME;
-                var w = new NetDataWriter();
-                processor.WriteNetSerializable(w, ref respond);
-                peer.Send(w, 0, DeliveryMethod.ReliableOrdered);
+                sendWriter.Reset();
+                processor.WriteNetSerializable(sendWriter, ref respond);
+                peer.Send(sendWriter, 0, DeliveryMethod.ReliableOrdered);
                 return;
             }
         }
 
         // 找出生点（读配置）
+#if UNITY_EDITOR
+        var start = Context.net.spawnPoint[ESceneType.TEST];
+#else
         var start = Context.net.spawnPoint[ESceneType.CITY];
-
+#endif
 
         // 校验通过，可以连接，把玩家放入RoomMgr，并发送ok包
         // 这里有个关键细节：先发送所有玩家的登录信息包，再把新玩家添加到场景管理，防止客户端收到包含自己玩就的包
         // 为后续客户端预测打下基础，不是全部都是netPlayer，相机对着的是我们操控的。
         // 我们操控的就是本地玩家，那个玩家的netPlayer对我们不可见
-        var player = new NetPlayerData(req.player, peer, start, Quaternion.identity, ESceneType.CITY);
-        var ok = new LoginResponse { 
-            serverResponse = LoginResponse.Status.ACCEPTED, 
+
+#if UNITY_EDITOR
+        var playerData = new NetPlayerData(req.player, peer, start, Quaternion.identity, ESceneType.TEST);
+#else
+        var playerData = new NetPlayerData(req.player, peer, start, Quaternion.identity,  ESceneType.CITY);
+#endif
+        var ok = new LoginResponse
+        {
+            serverResponse = LoginResponse.Status.ACCEPTED,
             spawnPoint = start,
+#if UNITY_EDITOR
+            enterScene = ESceneType.TEST,
+#else
             enterScene = ESceneType.CITY,
+#endif
+#if UNITY_EDITOR
+            scenePlayers = roomMgr.roomAndPlayers.TryGetValue(ESceneType.TEST, out var ps) ? new List<NetPlayerData>(ps) : new List<NetPlayerData>(),
+#else
             // 默认玩家是直接出生在城市里的，只发城市里的人
-            scenePlayers = GetScenePlayers(ESceneType.CITY)
+            scenePlayers = roomMgr.roomAndPlayers.TryGetValue(ESceneType.CITY, out var ps) ? new List<NetPlayerData>(ps) : new List<NetPlayerData>(),
+#endif
         };
-        var w2 = new NetDataWriter();
-        processor.WriteNetSerializable(w2, ref ok);
-        peer.Send(w2, 0, DeliveryMethod.ReliableOrdered);
+        sendWriter.Reset();
+        processor.WriteNetSerializable(sendWriter, ref ok);
+        peer.Send(sendWriter, 0, DeliveryMethod.ReliableOrdered);
 
 
         // 真正添加到场景管理器中
-        roomMgr.AddPlayer(ESceneType.CITY, player);
-
+#if UNITY_EDITOR
+        roomMgr.AddPlayer(ESceneType.TEST, playerData);
+#else
+        roomMgr.AddPlayer(ESceneType.CITY, playerData);
+#endif
 
         // 有新人进来了，广播给同场景的其他人（带上他的位置、朝向、着装）
-        // 用 GetScenePeers 排除新进入的这个玩家自己，防止他自己出问题
-        var entered = new NewPlayerEntered { newPlayerData = player };
-        var w3 = new NetDataWriter();
-        processor.WriteNetSerializable(w3, ref entered);
-        var otherPeers = GetScenePeers(ESceneType.CITY, peer);
+        // 用GetScenePeers排除新进入的这个玩家自己，防止他自己出问题
+        var entered = new NewPlayerEntered { newPlayerData = playerData };
+        sendWriter.Reset();
+        processor.WriteNetSerializable(sendWriter, ref entered);
+#if UNITY_EDITOR
+        var otherPeers = roomMgr.GetScenePeers(ESceneType.TEST, peer);
+#else
+        var otherPeers = roomMgr.GetScenePeers(ESceneType.CITY, peer);
+#endif
         foreach (var p in otherPeers)
         {
-            p.Send(w3, 0 ,DeliveryMethod.ReliableSequenced);
+            p.Send(sendWriter, 0, DeliveryMethod.ReliableSequenced);
         }
-    }
-
-    /// <summary>取指定场景里的所有玩家数据（拷贝一份，避免发送期间被 AddPlayer 改到）</summary>
-    private List<NetPlayerData> GetScenePlayers(ESceneType scene)
-    {
-        var result = new List<NetPlayerData>();
-        if (!roomMgr.roomAndPlayers.TryGetValue(scene, out var players)) return result;
-
-        result.AddRange(players);
-        return result;
     }
 
     // 关闭和所有人的连接（但不关闭服务器）

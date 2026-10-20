@@ -44,6 +44,17 @@ public class HairBase : ClothBase
         return copy;
     }
 
+    public override bool IsSameAs(ItemBase item)
+    {
+        if (!base.IsSameAs(item)) return false;
+
+        var other = item as HairBase;
+        if (other == null) return false;
+
+        return HairColor == other.HairColor
+            && targetSlot == other.targetSlot;
+    }
+
     public override void Serialize(NetDataWriter bw)
     {
         base.Serialize(bw);

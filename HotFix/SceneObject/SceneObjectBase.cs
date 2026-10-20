@@ -20,11 +20,13 @@ public class SceneObjectBase : Actor
     public void Destroy(LocalPlayer player)
     {
         if (Util.CheckNull(player)) return;
-        if (player.inventory.TryPutIntoBag(furniture) != null)
-        {
-            Log.Info("背包已满，无法继续放入家具" + furniture.itemName);
-            return;
-        }
+
+        // TODO: 需要更新API
+        // if (player.inventory.TryPutIntoBag(furniture) != null)
+        // {
+        //     Log.Info("背包已满，无法继续放入家具" + furniture.itemName);
+        //     return;
+        // }
         Destroy(gameObject);
     }
 

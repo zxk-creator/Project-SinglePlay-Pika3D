@@ -1,6 +1,6 @@
 using UnityEngine;
 
-public class ChangeAvatarCharacter : MonoBehaviour, ICharacterAnimationOwner
+public class ChangeAvatarCharacter : MonoBehaviour, ICharacter
 {
     public Equip displayCloth;
     // 一个相机
@@ -10,43 +10,47 @@ public class ChangeAvatarCharacter : MonoBehaviour, ICharacterAnimationOwner
     [Tooltip("Inspector手动赋值（displayCloth.bonesRoot 同样要预先连到这具骨架）")]
     public GameObject bonesRoot;
 
-    private Animator previewAnimator;
+    [Tooltip("骨架根上的 Animator")]
+    public Animator previewAnimator;
 
-    /// <summary>性别。公开读写：ICharacterAnimationOwner 要求 set，CharacterAnimation 靠它选控制器</summary>
+    [Tooltip("女性待机控制器")]
+    public RuntimeAnimatorController femaleAnimController;
+
+    [Tooltip("男性待机控制器")]
+    public RuntimeAnimatorController maleAnimController;
+
+    private static readonly int IdleStateHash = Animator.StringToHash("Idle");
+
+    private bool equipInitialized;
+
+    /// <summary>性别</summary>
     public bool isGirl { get; set; } = true;
 
-    /// <summary>
-    /// 纯展示角色，不做移动/动作状态机。给 CharacterAnimation 一个恒定值即可，
-    /// 否则它在 Update 里读 moveState 会直接 NRE。
-    /// </summary>
+    /// <summary>纯展示角色，动作状态恒为待机</summary>
     public EAnimationState moveState { get; set; } = EAnimationState.IDLE;
 
     public bool IsGirl => isGirl;
 
-    // 应用默认
     void Start()
     {
+        displayCloth.Initialize();
         ApplyGender(isGirl);
     }
 
-    /// <summary>外部切性别。性别没变就不做（防止重复点同一个按钮时白白重建一次穿戴）</summary>
+    /// <summary>切换性别，性别没变就跳过</summary>
     public void SetGender(bool newIsGirl)
     {
-        if (this.isGirl == newIsGirl) return;
+        if (isGirl == newIsGirl) return;
         ApplyGender(newIsGirl);
     }
 
-    /// <summary>恢复默认装。即使性别没变也要重来一遍</summary>
+    /// <summary>恢复默认装</summary>
     public void RestoreDefaultOutfit()
     {
         ApplyGender(isGirl);
     }
 
-    /// <summary>
-    /// 切性别：骨架不换（男女骨架层级相同），只换外观和动画。
-    /// 骨架归一化与 displayCloth.bonesRoot 都交给 Equip（Awake 里统一拉正，
-    /// 且依赖 displayCloth.bonesRoot 在 Inspector 里预先连好）。
-    /// </summary>
+    /// <summary>按性别换控制器、换外观</summary>
     private void ApplyGender(bool newIsGirl)
     {
         if (bonesRoot == null)
@@ -54,6 +58,7 @@ public class ChangeAvatarCharacter : MonoBehaviour, ICharacterAnimationOwner
             PK.Log.Error("bonesRoot 未赋值，请在 Inspector 里把骨架拖上");
             return;
         }
+
         if (displayCloth == null)
         {
             PK.Log.Error("displayCloth 未赋值，无法换装");
@@ -63,22 +68,45 @@ public class ChangeAvatarCharacter : MonoBehaviour, ICharacterAnimationOwner
         isGirl = newIsGirl;
 
         displayCloth.isNPC = false;
+        displayCloth.isGirl = newIsGirl;
 
-        // 穿戴侧：切性别 + 清骨骼缓存 + 按新性别默认装重穿
-        displayCloth.SetGender(newIsGirl);
+        if (previewAnimator == null)
+            previewAnimator = bonesRoot.GetComponentInChildren<Animator>(true);
 
-        // 动画侧：换对应性别的 Animator 控制器并重建衣服动画覆盖
-        var charAnim = bonesRoot.GetComponentInChildren<CharacterAnimation>(true);
-        if (charAnim != null)
-            charAnim.SetGender(newIsGirl);
-
-        previewAnimator = bonesRoot.GetComponentInChildren<Animator>(true);
         if (previewAnimator == null)
         {
             PK.Log.Error("骨架里找不到 Animator");
             return;
         }
+
         previewAnimator.enabled = true;
+
+        if (!equipInitialized)
+        {
+            displayCloth.Initialize();
+            equipInitialized = true;
+        }
+
+        PlayIdle();
+
+        displayCloth.SetGender(newIsGirl);
+    }
+
+    /// <summary>换上对应性别的基础控制器并播待机</summary>
+    private void PlayIdle()
+    {
+        RuntimeAnimatorController controller = isGirl ? femaleAnimController : maleAnimController;
+
+        if (controller == null)
+        {
+            PK.Log.Error("ChangeAvatarCharacter 未赋值对应性别的 Animator Controller");
+            return;
+        }
+
+        previewAnimator.runtimeAnimatorController = controller;
+        previewAnimator.Rebind();
+        previewAnimator.Play(IdleStateHash, 0, 0f);
+        previewAnimator.Update(0f);
     }
 
     public void Wear(ClothBase newCloth)

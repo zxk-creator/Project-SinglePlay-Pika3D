@@ -14,28 +14,22 @@ public class CanPlaceIntoInventory : MonoBehaviour, IDropRecevier
             // 卸下装备
             case EOperateLocation.EquipArea:
                 {
-                    if (item is ToolBase tool)
+                    if (item is ToolBase)
                     {
-                        var inv = Context.localPlayer.inventory;
-                        // 先尝试放回背包，放不下保持装备状态不丢
-                        ItemBase remain = inv.TryPutIntoBag(tool);
-                        if (remain != null)
-                        {
-                            Log.Warn("背包空间不足，无法卸下工具：" + tool.itemName);
-                            return false;
-                        }
-                        inv.RemoveTool();
-                        inv.bagPanel.RefreshEquip();
-                        return true;
+                        // 传 null 表示卸下手上的工具
+                        Context.net.Send(new ClientEquipToolIntent());
+                        return false;
                     }
 
                     var ifIsCloth = item as ClothBase;
                     if (ifIsCloth == null) return false;
-                    // 卸下成功才刷新装备栏，失败（背包满）保持原状
-                    bool ok = Context.localPlayer.inventory.RemoveClothByReference(ifIsCloth);
-                    if (ok)
-                        Context.localPlayer.inventory.bagPanel.RefreshEquip();
-                    return ok;
+
+                    var takeOffClothIntent = new ClientTakeOffClothIntent()
+                    {
+                        targetSlot = ifIsCloth.clothType
+                    };
+                    Context.net.Send(takeOffClothIntent);
+                    return false;
                 }
                 // 卸下背包
                 case EOperateLocation.BagSlot:
@@ -47,7 +41,8 @@ public class CanPlaceIntoInventory : MonoBehaviour, IDropRecevier
                         return false;
                     }
 
-                    return Context.localPlayer.inventory.SetBag(bag);
+                    Context.net.Send(new ClientTakeOffBagIntent());
+                    return false;
                 }
         }
 

@@ -19,7 +19,9 @@ public enum ESceneType
     NONE,
     DEFAULT,
     CITY,
-    MAIN_MENU
+    MAIN_MENU,
+    // 测试场景，用于快速调试
+    TEST
 }
 
 // 管理当前活跃的关卡，时间，天气等，全局唯一，服务器权威，谁来都只能获得数据。
@@ -115,9 +117,42 @@ public class SceneController
         Log.Error("未找到场景" + newScene + "!");
     }
 
-    public void RemovePlayerById(long id)
+    /// <summary>
+    /// 根据玩家名字在当前场景中查找网络玩家
+    /// </summary>
+    public NetPlayer FindPlayerByName(string playerName)
     {
-        var p = scenePlayers.Find(p => p.netPlayer.playerId == id);
+        if (string.IsNullOrEmpty(playerName) || scenePlayers == null)
+            return null;
+
+        for (int i = 0; i < scenePlayers.Count; i++)
+        {
+            var p = scenePlayers[i];
+            if (p != null && p.netPlayer != null && p.netPlayer.playerName == playerName)
+            {
+                return p;
+            }
+        }
+
+        return null;
+    }
+
+    // 标记场景中某个玩家死了
+    public void MarkPlayerDead(string playerName, Vector3 deathVelocity, Vector3 deathAngularVelocity)
+    {
+        var p = scenePlayers.Find(p => p.netPlayer.playerName == playerName);
+        if (p == null)
+        {
+            Log.Info("当前场景没有这个玩家，已跳过");
+            return;
+        }
+        
+        p.SetPlayerDead(deathVelocity,deathAngularVelocity);
+    }
+
+    public void RemovePlayerByName(string playerName)
+    {
+        var p = scenePlayers.Find(p => p.netPlayer.playerName == playerName);
         if (p == null)
         {
             Log.Error("没有这个玩家，这不该发生！");
@@ -142,22 +177,30 @@ public class SceneController
         var netPlayerCom = instancedObj.GetComponent<NetPlayer>();
         if (netPlayerCom == null)
         {
-            Log.Error("[SceneController] NetPlayer 预制体的根节点上没有挂 NetPlayer 脚本，无法生成其他玩家");
+            Log.Error("NetPlayer预制体的根节点上没有挂NetPlayer脚本，无法生成其他玩家");
             Object.Destroy(instancedObj);
             return;
         }
 
         netPlayerCom.netPlayer = playerData;
-        // 套用他的着装和性别（骨架没建好时 SetOutfit 会先攒着，等 NetPlayer.Start 再补）
+        // 设置着装，性别
         netPlayerCom.SetOutfit(playerData.playerData.equipedCloth, playerData.playerData.isGirl);
-
+        // 设置玩家名称
+        netPlayerCom.SetPlayerName(playerData.playerName);
+        
         // 加进列表
         scenePlayers.Add(netPlayerCom);
         // 我们手动管理，不让他因为切换场景被销毁
         Object.DontDestroyOnLoad(instancedObj);
+
+        // 读取玩家是不是死了，死了的话就开启他的布娃娃让他倒地
+        if (playerData.isDead)
+        {
+            Context.sc.MarkPlayerDead(netPlayerCom.netPlayer.playerName, Vector3.zero, Vector3.zero);
+        }
     }
 
-    // 生成本地玩家（全游戏仅此一个！）
+    // 生成本地玩家（全游戏仅此一个！）（并且适用于玩家复活的时候调用用于生成新玩家）
     public void SpawnALocalPlayer(SaveData playerData, Vector3 spawnLocation)
     {
         var playerObj = localPlayerResourceHandle.Result;
@@ -168,13 +211,13 @@ public class SceneController
         var localPlayer = instancedObj.GetComponent<LocalPlayer>();
         if (localPlayer == null)
         {
-            Log.Error("LocalPlayer 预制体的根节点上没有挂 LocalPlayer 脚本，无法生成本地玩家");
+            Log.Error("LocalPlayer预制体的根节点上没挂LocalPlayer脚本，无法生成本地玩家");
             Object.Destroy(instancedObj);
             return;
         }
 
         Context.localPlayer = localPlayer;
-        Context.localPlayer.playerSaveData = playerData;
+        Context.localPlayer.SetSaveData(playerData);
 
         // 不会加入到sc的NetPlayer列表，我不属于控制范围之内！
         // 不让他销毁

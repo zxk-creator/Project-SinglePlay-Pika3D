@@ -101,8 +101,6 @@ public abstract class UIBase
         }
 
         // 跨场景常驻。
-        UnityEngine.Object.DontDestroyOnLoad(UIPrefab);
-
         if (canvasGO != null)
             UnityEngine.Object.DontDestroyOnLoad(canvasGO);
     }

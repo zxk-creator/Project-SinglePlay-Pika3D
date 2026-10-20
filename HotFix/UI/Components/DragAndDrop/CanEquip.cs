@@ -12,22 +12,29 @@ public class CanEquip : MonoBehaviour, IDropRecevier
             // 来自装备区域。直接装备或切换
             case EOperateLocation.InventoryArea:
                 {
+                    // 如果是工具，则切换工具
                     if (item is ToolBase tool)
                     {
-                        if (!Context.localPlayer.inventory.SetTool(tool)) return false;
-                        Context.localPlayer.inventory.RemoveFromBag(tool);
-                        Context.localPlayer.inventory.bagPanel.RefreshEquip();
-                        return true;
+                        // 发送切换工具信号
+                        var changeToolIntent = new ClientEquipToolIntent()
+                        {
+                            toolToEquip = tool
+                        };
+                        Context.net.Send(changeToolIntent);
+                        return false;
                     }
 
                     var isCloth = item as ClothBase;
                     if (isCloth == null) return false;
-                    // 换装失败（如背包满、旧装备放不回）→ 中止，物品保留不消失
-                    if (!Context.localPlayer.inventory.ChangeCloth(isCloth)) return false;
-                    Context.localPlayer.inventory.RemoveFromBag(isCloth);
-                    Context.localPlayer.inventory.bagPanel.RefreshEquip();
 
-                    return true;
+                    // 如果是衣服，发送切换衣服的意图
+                    var changeClothIntent = new ClientEquipClothIntent()
+                    {
+                        clothToEquip = isCloth
+                    };
+                    // 直接发送信号
+                    Context.net.Send(changeClothIntent);
+                    return false;
                 }
                 // 自己挂自己，没反应处理
             case EOperateLocation.EquipArea:

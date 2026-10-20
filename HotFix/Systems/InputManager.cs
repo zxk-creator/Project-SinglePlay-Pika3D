@@ -61,7 +61,7 @@ public class InputManager : MonoBehaviour
     public KeyCode keypadDown = KeyCode.DownArrow;
 
     // 当前正在接收输入者
-    private IControlable currentController;
+    public IControlable currentController {get; private set;}
 
     void FixedUpdate()
     {
@@ -127,7 +127,7 @@ public class InputManager : MonoBehaviour
         return new Vector2(horizontal, vertical);
     }
 
-    private IInputAcceptable GetController()
+    public IInputAcceptable GetController()
     {
         if (Context.um.HasUIBlocking())
         {

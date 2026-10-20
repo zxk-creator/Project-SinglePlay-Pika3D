@@ -15,11 +15,12 @@ public class LuaEnv
         env.Globals["Log"] = (Action<string>)((msg) => Log.Info(msg));
         env.Globals["contains"] = new Func<double,bool>((id) =>
         {
-            var allItems = Context.localPlayer.inventory.GetAllItems();
-            foreach (var i in allItems)
-            {
-                if (i.id == id) return true;
-            }
+            // TODO: 需要更新API
+            // var allItems = Context.localPlayer.inventory.GetAllItems();
+            // foreach (var i in allItems)
+            // {
+            //     if (i.id == id) return true;
+            // }
             return false;
         });
     }

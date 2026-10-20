@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 using PK;
+using PKSv;
 
 public class CharacterEquipCollection
 {
@@ -27,6 +28,31 @@ public class CharacterEquipCollection
         Earring = newEquips.Earring;
         Face = newEquips.Face;
         Glasses = newEquips.Glasses;
+    }
+
+    /// <summary>
+    /// 比较两套装备的所有槽位是否真的一模一样（外观、状态、染色等）
+    /// </summary>
+    public bool IsSameAs(CharacterEquipCollection other)
+    {
+        if (other == null) return false;
+
+        bool IsSlotSame(ClothBase a, ClothBase b)
+        {
+            if (a == null && b == null) return true;
+            if (a == null || b == null) return false;
+            return a.IsSameAs(b);
+        }
+
+        return IsSlotSame(Hair, other.Hair)
+            && IsSlotSame(Glasses, other.Glasses)
+            && IsSlotSame(Earring, other.Earring)
+            && IsSlotSame(Upper, other.Upper)
+            && IsSlotSame(Hands, other.Hands)
+            && IsSlotSame(Bottom, other.Bottom)
+            && IsSlotSame(Face, other.Face)
+            && IsSlotSame(Stock, other.Stock)
+            && IsSlotSame(Shoes, other.Shoes);
     }
 
     public void SetSlot(EClothType slot, ItemBase cloth)
@@ -63,300 +89,118 @@ public class CharacterEquipCollection
     }
 }
 
-// 角色的背包系统后端。不仅适用于玩家角色，还适用于NPC
+/// <summary>
+/// 角色背包系统，读写绑定的SaveData
+/// </summary>
 public class InventorySystem
 {
-    // 装备插槽
-    public CharacterEquipCollection equips {get; private set;} = new CharacterEquipCollection();
-    
-    // 背包，自身就代表了装备的那个背包，因此可以为null
-    public BagpackBase BagSpace {get; private set;}
-    // 默认背包容量，直接使用默认值。
-    public BagpackBase HandSpace {get; private set;} = new BagpackBase();
-    public ToolBase currentEquipedTool {get; private set;}
-    public BagPanel bagPanel {get; private set;}
-    public Equip equipFrontend {get; private set;}
-    private CharacterBase character;
+    /// <summary>绑定的存档数据</summary>
+    public SaveData saveData { get; private set; }
 
-    public InventorySystem(Equip equipFrontend, CharacterBase character)
+    // 是否已经完成过首次渲染，首次渲染要先铺默认装
+    private bool hasBound;
+
+    /// <summary>绑定存档数据并刷新装备，工具与背包界面</summary>
+    public void BindSaveData(SaveData data)
     {
-        this.equipFrontend = equipFrontend;
-        this.character = character;
-    }
+        if (data == null) return;
 
-    public void SetCharacterEquips(CharacterEquipCollection newEquips)
-    {
-        if (newEquips == null) newEquips = new CharacterEquipCollection();
-        equips = newEquips;
-        ApplyEquipsToRender();
-    }
+        // 先比较是否都一样，都一样不用执行任何操作
+        if (data.IsSameAs(saveData)) return;
 
-    /// <summary>
-    /// 换装接口。可选：是否强制替换角色服装
-    /// </summary>
-    /// <param name="cloth">新衣服</param>
-    /// <param name="bForceReplace">直接替换，原始服装直接消失</param>
-    /// <returns>是否换装成功</returns>
-    public bool ChangeCloth(ClothBase cloth, bool bForceReplace = false)
-    {
-        if (equipFrontend == null)
+        saveData = data;
+
+        if (saveData.equipedCloth == null)
+            saveData.equipedCloth = new CharacterEquipCollection();
+
+        if (saveData.handSpace == null)
+            saveData.handSpace = new BagpackBase();
+
+        // 首次渲染先铺一遍默认装，后面只处理有变化的槽位
+        if (!hasBound)
         {
-            Log.Error("Equip 组件未初始化");
-            return false;
-        }
-
-        if (cloth == null)
-        {
-            Log.NullPtr("ChangeCloth");
-            return false;
-        }
-
-        if (cloth.clothType == EClothType.NONE)
-        {
-            Log.Error($"ChangeCloth: 衣服 {cloth.itemName} 的部位类型不合法 {cloth.clothType}");
-            return false;
-        }
-
-        EClothType slot = cloth.clothType;
-        ItemBase old = equips.GetSlot(slot);
-        Log.Info($"[Inv] ChangeCloth slot={slot} clothId={cloth.id} oldIsNull={(old == null)} oldId={(old != null ? old.id : -1)} force={bForceReplace}");
-
-        if (old != null)
-        {
-            equips.SetSlot(slot, null);
-            if (!bForceReplace)
-            {
-                ItemBase remain = TryPutIntoBag(old);
-                if (remain != null)
-                {
-                    equips.SetSlot(slot, old);
-                    Log.Info("背包空间不足，无法更换装备：" + cloth.itemName);
-                    return false;
-                }
-            }
-            // 先恢复默认着装
-            equipFrontend.Remove(slot);
-        }
-
-        // 再穿上新装备
-        equips.SetSlot(slot, cloth);
-        equipFrontend.Wear(cloth);
-        Log.Info($"[Inv] ChangeCloth done slot={slot} equipsUpperId={(equips.Upper != null ? equips.Upper.id : -1)}");
-        return true;
-    }
-
-    public void RemoveCloth(EClothType slot)
-    {
-        equips.SetSlot(slot, null);
-        equipFrontend.Remove(slot);
-    }
-
-    /// <summary>
-    /// 根据衣物引用卸下装备，若该衣物当前穿戴在某个插槽中，则将其移除并尝试放入背包。
-    /// 若背包空间不足，则操作作废，保持原穿戴状态并提示。
-    /// </summary>
-    /// <param name="cloth">要卸下的衣物引用</param>
-    /// <returns>卸下成功返回 true；未穿戴该衣物或背包空间不足返回 false</returns>
-    public bool RemoveClothByReference(ClothBase cloth)
-    {
-        if (cloth == null)
-        {
-            Log.NullPtr("RemoveClothByReference");
-            return false;
+            hasBound = true;
+            equipFrontend.ApplyDefaultOutfit();
         }
 
         foreach (EClothType slot in Enum.GetValues(typeof(EClothType)))
         {
-            ItemBase current = equips.GetSlot(slot);
-            if (current == cloth)
-            {
-                equips.SetSlot(slot, null);
+            ItemBase cloth = saveData.equipedCloth.GetSlot(slot);
 
-                ItemBase remain = TryPutIntoBag(cloth);
-                if (remain == null)
-                {
-                    equipFrontend?.Remove(slot);
-                    return true;
-                }
-                else
-                {
-                    equips.SetSlot(slot, cloth);
-                    Log.Info("无空间可放，无法卸下装备：" + cloth.itemName);
-                    return false;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    public void ApplyEquipsToRender()
-    {
-        foreach (EClothType slot in Enum.GetValues(typeof(EClothType)))
-        {
-            ItemBase cloth = equips.GetSlot(slot);
             if (cloth == null)
             {
-                equipFrontend.Remove(slot);
+                if (equipFrontend.HasWornCloth(slot))
+                    equipFrontend.Remove(slot);
                 continue;
             }
 
             equipFrontend.Wear((ClothBase)cloth);
         }
+
+        equipFrontend.SetTool(saveData.currentEquipedTool as ToolBase);
+
+        if (!character.isNPC && bagPanel != null)
+            bagPanel.Init(false);
     }
 
-    /// <summary>
-    /// 尝试将物品放入背包，先尝试放入手持背包（HandSpace），若放不下再尝试放入主背包（BagSpace）。
-    /// 放得下返回 null，完全放不下或部分剩余则返回剩余部分的对象。
-    /// </summary>
-    /// <param name="newItem">要放入的物品</param>
-    /// <returns>剩余部分的对象，全部放入则返回 null</returns>
-    public ItemBase TryPutIntoBag(ItemBase newItem)
+    /// <summary>当前装备</summary>
+    public CharacterEquipCollection equips
     {
-        if (newItem == null)
+        get
         {
-            Log.NullPtr("TryPutIntoBag");
-            return newItem;
+            if (saveData.equipedCloth == null)
+                saveData.equipedCloth = new CharacterEquipCollection();
+            return saveData.equipedCloth;
         }
-
-        ItemBase remain = HandSpace.TryPutIntoBag(newItem);
-        if (remain == null) return null;
-
-        if (BagSpace != null)
-        {
-            remain = BagSpace.TryPutIntoBag(remain);
-            if (remain == null) return null;
-        }
-
-        return remain;
+        private set => saveData.equipedCloth = value ?? new CharacterEquipCollection();
     }
 
-    /// <summary>
-    /// 设置背包。自带容量检查，放置回去
-    /// </summary>
-    /// <param name="newBag"></param>
-    public bool SetBag(BagpackBase newBag)
+    /// <summary>主背包，可能为 null</summary>
+    public BagpackBase BagSpace
     {
-        if (newBag == null)
-        {
-            Log.NullPtr("SetBag");
-            return false;
-        }
-
-        if (BagSpace == null)
-        {
-            BagSpace = newBag;
-            if (!character.isNPC) {
-                bagPanel?.Init(false);
-            }
-            return true;
-        }
-        
-        if (newBag == BagSpace)
-        {
-            Log.Warn("不能把当前背着的背包再次背上");
-            return false;
-        }
-
-        if (BagSpace.ContainsBag(newBag))
-        {
-            Log.Warn("替换背包不能来自当前背包内部");
-            return false;
-        }
-
-        bool fromHand = HandSpace.RemoveItem(newBag);
-
-        ItemBase remain = newBag.TryPutIntoBag(BagSpace);
-        if (remain != null)
-        {
-            if (fromHand) HandSpace.items.Add(newBag);
-            Log.Warn("新背包空间不足，无法放入当前背包：" + BagSpace.itemName);
-            return false;
-        }
-
-        BagSpace = newBag;
-        if (!character.isNPC){
-            bagPanel?.Init(false);
-        }
-        return true;
+        get => saveData.equipedBag;
+        private set => saveData.equipedBag = value;
     }
 
-    public void SetHand(BagpackBase newBag)
+    /// <summary>手部背包，恒非 null</summary>
+    public BagpackBase HandSpace
     {
-        if (newBag == null)
+        get
         {
-            Log.NullPtr("SetHand");
-            return;
+            if (saveData.handSpace == null)
+                saveData.handSpace = new BagpackBase();
+            return saveData.handSpace;
         }
-
-        HandSpace = newBag;
-        if (!character.isNPC) {
-            bagPanel?.Init(false);
-        }
+        private set => saveData.handSpace = value ?? new BagpackBase();
     }
 
-    /// <summary>
-    /// 装备工具（斧头/镐子/剑/钓鱼竿等），挂到角色手上并记录到currentEquipedTool。
-    /// 可以为null，表示去掉装备
-    /// </summary>
-    public bool SetTool(ToolBase tool)
+    /// <summary>当前手上的工具，可能为 null</summary>
+    public ToolBase currentEquipedTool
     {
-        if (tool == null) return false;
-        currentEquipedTool = tool;
-        equipFrontend.SetTool(tool);
-        if (!character.isNPC){
-            bagPanel?.Init(false);
-        }
-        return true;
+        get => saveData.currentEquipedTool as ToolBase;
+        private set => saveData.currentEquipedTool = value;
     }
 
-    /// <summary>卸下当前工具</summary>
-    public void RemoveTool()
+    /// <summary>背包界面</summary>
+    public BagPanel bagPanel {get; private set;}
+
+    /// <summary>装备渲染组件</summary>
+    public Equip equipFrontend {get; private set;}
+    private CharacterBase character;
+
+    /// <summary>绑定存档数据并持有渲染组件</summary>
+    public InventorySystem(Equip equipFrontend, CharacterBase character, SaveData saveData)
     {
-        currentEquipedTool = null;
-        equipFrontend.RemoveTool();
+        this.equipFrontend = equipFrontend;
+        this.character = character;
+        BindSaveData(saveData);
     }
 
-    public bool RemoveFromBag(ItemBase item)
-    {
-        if (HandSpace.RemoveItem(item)) return true;
-        if (BagSpace != null && BagSpace.RemoveItem(item)) return true;
-        return false;
-    }
-
+    /// <summary>绑定背包界面</summary>
     public void SetBagPanel(BagPanel newPanel)
     {
         if (Util.CheckNull(newPanel)) return;
 
         bagPanel = newPanel;
-    }
-
-    // 便捷方法
-    public static void TryGenerateDropItem(ItemBase item,Vector3 position)
-    {
-        if (Util.CheckNull(item)) return;
-        var drop = ResourceHelp.LoadPrefab("DropItem");
-        if (drop == null)
-        {
-            Log.Error("加载DropItem预制体失败");
-            return;
-        }
-        var component = drop.GetComponent<PickupableItems>();
-        if (component == null)
-        {
-            Log.Error("DropItem预制体缺少PickupableItems组件");
-            UnityEngine.Object.Destroy(drop);
-            return;
-        }
-        component.SetPickupItem(item);
-        drop.transform.position = position;
-    }
-
-    public List<ItemBase> GetAllItems()
-    {
-        var res = new List<ItemBase>();
-        res.AddRange(HandSpace.items);
-        res.AddRange(BagSpace.items);
-        return res;
     }
 }

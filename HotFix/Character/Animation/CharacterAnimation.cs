@@ -2,37 +2,170 @@ using System.Collections.Generic;
 using UnityEngine;
 using PK;
 
-
+// 本类不强依赖CharacterBase，只需要一个接口ICharacterAnimationOwner
+// 为的就是解耦，让任何人都能用，所以尽量别乱改
 public class CharacterAnimation : MonoBehaviour, IDeathAndRevive
 {
+    ////////////////////////////////////////生命周期与初始化////////////////////////////////////////
     public RuntimeAnimatorController femaleAnimController;
     public RuntimeAnimatorController maleAnimController;
     // 服装
     public Equip equipSystem;
 
-    private const float CROSSFADE_DURATION = 0.15f;
-    private string lastAnimName = "";
-    private EAnimationState moveState;
-    private bool initialized;
-    private bool isDead;
-    private bool isReviving;
-    public System.Action onReviveFinished;
-    // 正在做动作被占用，不播放IdleExtension动画
-    public bool isDoingAction = false;
-    /// <summary>当前动作状态名（坐Sit/躺Lie/洗澡Bath等）。动作期间锁定动画不被移动状态切换，换装重建后自动补播</summary>
-   public string actionStateName = "";
+    [Tooltip("骨架根上的Animator。必须在Inspector里手动拖，不再自动查找。装备部件自带 Animator，自动找会找到部件上导致 A-pose")]
+    [SerializeField] private Animator anim;
+
+    public ICharacter characterBase;
 
     /// <summary>
-    /// 强制动画模式。为 true 时不再按速度/落地/死亡等条件自己判断播哪个动画，
-    /// 完全由外部设置 EMoveState 决定（见 SetAnimationState）
+    /// 是否用 AnimatorOverrideController 承载衣服层动画替换。
+    /// 打开＝正常流程（衣服层播自身动画）；关闭＝直接把基础控制器交给 Animator，
+    /// 衣服层动画替换失效，用于排查"角色完全不播动画"是不是这层包装导致的。
     /// </summary>
-    public bool bForceSetAnimationState = false;
+    [Tooltip("打开＝用 AnimatorOverrideController 做衣服动画替换（正常）。关闭＝直接用基础控制器，仅用于排查动画不播的问题。")]
+    public bool useClothOverrideController = true;
 
-    /// <summary>强制模式下当前已套用的移动状态，用来判断外部是否改了值</summary>
-    private EAnimationState forcedMoveState;
-    private bool forcedApplied;
+    private AnimatorOverrideController overrideController;
 
-    [Tooltip("待机小动作状态名（控制器 Base Layer 里必须存在）")]
+    /// <summary>基础控制器，重建衣服动画覆盖时用它收集占位 clip</summary>
+    private RuntimeAnimatorController baseController;
+
+    public const float CROSSFADE_DURATION = 0.15f;
+
+    private static readonly string[] layerPrefixes = { "Hair", "Coat", "Skirt", "Wing" };
+
+    private void OnDestroy()
+    {
+        if (equipSystem != null)
+            equipSystem.OnEquipChanged -= OnEquipChangedHandler;
+        if (characterBase is LocalPlayer) {}
+            LocalPlayer.UnregisterDeathAndReviveEvents(this);
+        
+        // 把角色身上的Animator也销毁了
+        Destroy(anim);
+    }
+
+    /// <summary>
+    /// 由使用者显式调用此方法来初始化动画系统，宿主与换装系统必须已就绪。
+    /// </summary>
+    public void Initialize(ICharacter owner, Equip equip)
+    {
+        if (owner == null)
+            throw new UnityException("[CharacterAnimation] owner 为 null");
+        if (equip == null)
+            throw new UnityException("[CharacterAnimation] equip 为 null");
+        if (anim == null)
+            throw new UnityException("[CharacterAnimation] Animator 未赋值，请在 Inspector 里拖上骨架根上的 Animator");
+
+        characterBase = owner;
+        equipSystem = equip;
+
+        RuntimeAnimatorController controller = owner.isGirl ? femaleAnimController : maleAnimController;
+        if (controller == null)
+            throw new UnityException("CharacterAnimation: 未赋值 femaleAnimController/maleAnimController，请检查 Inspector 配置");
+
+        string[] requiredStates = { "Idle", "Run", "FlyIdle", "FlyRun", idleExtensionStateName };
+        foreach (string stateName in requiredStates)
+        {
+            if (!anim.HasState(0, Animator.StringToHash(stateName)))
+                throw new UnityException("Animator Controller 缺少状态 '" + stateName + "'，请检查 controller 配置");
+        }
+        for (int layer = 1; layer <= layerPrefixes.Length; layer++)
+        {
+            string layerIdle = layerPrefixes[layer - 1] + "Idle";
+            if (!anim.HasState(layer, Animator.StringToHash(layerIdle)))
+                throw new UnityException("Animator Controller 第 " + layer + " 层缺少状态 '" + layerIdle + "'，请检查 controller 配置");
+        }
+
+        if (useClothOverrideController)
+        {
+            overrideController = new AnimatorOverrideController
+            {
+                runtimeAnimatorController = controller
+            };
+            anim.runtimeAnimatorController = overrideController;
+        }
+        else
+        {
+            // 排除法开关：不套 AnimatorOverrideController，直接把基础控制器交给 Animator。
+            // 代价是衣服层的动画替换失效，用来确认主状态（Idle/Run/...）本身是否正常。
+            overrideController = null;
+            anim.runtimeAnimatorController = controller;
+        }
+        baseController = controller;
+
+        equipSystem.OnEquipChanged += OnEquipChangedHandler;
+        if (owner is LocalPlayer) {}
+            // LocalPlayer.RegisterDeathAndReviveEvents(this);
+
+        animState = EAnimationState.IDLE;
+        idleExtensionPlaying = false;
+        idleExtensionTimer = 0f;
+        idleExtensionDelay = 0f;
+        lastAnimName = "";
+    }
+
+    ////////////////////////////////////////性别切换////////////////////////////////////////
+
+    /// <summary>
+    /// 换用对应性别的Animator控制器并重建衣服动画。(不会设置父类的isGirl字段。只会管自己的)
+    /// </summary>
+    public void SetGender(bool newIsGirl)
+    {
+        RuntimeAnimatorController controller = newIsGirl ? femaleAnimController : maleAnimController;
+        if (controller == null)
+            throw new UnityException("CharacterAnimation.SetGender: 对应性别的 Animator Controller 未赋值，请检查 Inspector 配置");
+
+        if (useClothOverrideController)
+        {
+            // AnimatorOverrideController 的 runtimeAnimatorController 不能直接换控制器，
+            // 必须整个重建一个，否则覆盖映射还挂在旧控制器上
+            overrideController = new AnimatorOverrideController
+            {
+                runtimeAnimatorController = controller
+            };
+            anim.runtimeAnimatorController = overrideController;
+        }
+        else
+        {
+            overrideController = null;
+            anim.runtimeAnimatorController = controller;
+        }
+        baseController = controller;
+
+        RebuildAnimationOverrides();
+
+        lastAnimName = "";
+        idleExtensionPlaying = false;
+        idleExtensionTimer = 0f;
+        idleExtensionDelay = 0f;
+    }
+
+    ////////////////////////////////////////每帧驱动////////////////////////////////////////
+
+    private void Update()
+    {
+        if (pendingOverrideRebuild)
+        {
+            pendingOverrideRebuild = false;
+            RebuildAnimationOverrides(); // 换装后重建衣服动画
+
+            // 重建会重设 Animator（状态机复位）。这里只清播放记忆，
+            // 让紧接着的 ApplyInjectedState 按当前 animState 重播一遍 ——
+            // 坐着/躺着换装（如浴巾）时就会补播回 Sit/Lie，不会被 Idle 顶掉。
+            lastAnimName = "";
+        }
+
+        // 唯一驱动源：外部通过 SetAnimationState 注入的 animState。
+        // 本组件不再读 characterBase.moveState，也不按速度/落地/死亡自己判断。
+        // 顺序：待机小动作（只认 IDLE）→ 状态分发。
+        UpdateIdleExtension();
+        ApplyInjectedState();
+    }
+
+    ////////////////////////////////////////待机小动作////////////////////////////////////////
+
+    [Tooltip("待机小动作状态名")]
     public string idleExtensionStateName = "IdleExtension";
     [Tooltip("站定多久后随机触发待机小动作（秒）")]
     public float idleExtensionMinDelay = 4f;
@@ -40,244 +173,18 @@ public class CharacterAnimation : MonoBehaviour, IDeathAndRevive
     [Tooltip("各性别的待机小动作 clip 池")]
     public AnimationClip[] femaleIdleExtensions;
     public AnimationClip[] maleIdleExtensions;
-    private bool isPlayingIdleExtension;
     private float idleExtensionTimer;
     private float idleExtensionDelay;
     private float idleExtensionClipLength;
     private float idleExtensionStartTime;
 
-    [Tooltip("骨架根上的 Animator。必须在 Inspector 里手动拖，不再自动查找。装备部件（如 Boy0280_Hand）自带 Animator，自动找会找到部件上导致 A-pose")]
-    [SerializeField] private Animator anim;
-    public ICharacterAnimationOwner characterBase;
-    private AnimatorOverrideController overrideController;
-
-    /// <summary>基础控制器，重建衣服动画覆盖时用它收集占位 clip</summary>
-    private RuntimeAnimatorController baseController;
-
-    /// <summary>换装后置位，下一帧重建衣服动画覆盖</summary>
-    private bool pendingOverrideRebuild;
-
-    /// <summary>衣服层前缀:（部位槽位, 动画目录名）。对应 hotfix/equips/animations/{gender}/clothing/{目录}/...</summary>
-    private static readonly (string prefix, EClothType slot, string folder)[] PartPrefixMap =
-    {
-        ("Hair",  EClothType.HAIR,   "hair"),
-        ("Coat",  EClothType.UPPER,  "coat"),
-        ("Skirt", EClothType.BOTTOM, "skirt"),
-    };
-
-    void Awake()
-    {
-        ResolveOwner();
-        if (characterBase == null)
-        {
-            Log.Error("未找到 ICharacterAnimationOwner，无法订阅换装事件");
-            return;
-        }
-        if (equipSystem == null)
-        {
-            Log.Error("equipSystem 为 null，无法订阅换装事件（衣服动画加载将失败）");
-        }
-        else
-        {
-            equipSystem.OnEquipChanged += OnEquipChangedHandler;
-        }
-        if (characterBase is NPC) return;
-        LocalPlayer.RegisterDeathAndReviveEvents(this);
-    }
-
     /// <summary>
-    /// 找宿主和换装系统：优先用 Inspector 已赋的值，没赋就自己找。
-    /// 必须自己找一次 —— characterBase 一旦为空，Initialize 里的 characterBase.isGirl 就直接 NRE，
-    /// 而且 Update 每帧都会重试 Initialize，会刷屏。
+    /// 待机小动作是否正在播放。这是小动作自己的独立状态标志 —— 不能用 animState 兼任：
+    /// 宿主每帧都会把 moveState（IDLE）推过来，若用 animState 表示"小动作播放中"，
+    /// 这个临时状态会被宿主的推送立刻盖掉，小动作一帧就被顶掉、再也播不出来。
+    /// 播放期间状态机由小动作独占，宿主的推送不得抢占。
     /// </summary>
-    private void ResolveOwner()
-    {
-        if (characterBase == null)
-        {
-            var owner = GetComponentInParent<ICharacterAnimationOwner>();
-            if (owner == null) owner = GetComponent<ICharacterAnimationOwner>();
-            characterBase = owner;
-        }
-        if (equipSystem == null)
-        {
-            equipSystem = GetComponentInParent<Equip>();
-            if (equipSystem == null) equipSystem = GetComponentInChildren<Equip>();
-        }
-    }
-
-    private void OnDestroy()
-    {
-        if (characterBase != null && equipSystem != null)
-            equipSystem.OnEquipChanged -= OnEquipChangedHandler;
-        LocalPlayer.UnregisterDeathAndReviveEvents(this);
-    }
-
-    /// <summary>换装完成 → 下一帧重建衣服动画覆盖</summary>
-    private void OnEquipChangedHandler()
-    {
-        pendingOverrideRebuild = true;
-    }
-
-    private void Initialize()
-    {
-        // Awake 时可能还没把自己挂到宿主下面（骨架是运行时 Instantiate 的），这里再补一次
-        ResolveOwner();
-        if (characterBase == null)
-        {
-            Log.Error("[CharacterAnimation] 找不到 ICharacterAnimationOwner（宿主），无法初始化动画");
-            return;
-        }
-        // 骨架烘在 prefab 里了，Animator 由 Inspector 直接指定。
-        // 不再自动查找：装备部件（如 Boy0280_Hand）自带 Animator，
-        // GetComponentInChildren 会先遍历到它们，控制器赋到部件上、骨架 Animator 为空 → A-pose。
-        if (anim == null)
-        {
-            Log.Error("[CharacterAnimation] Animator 未赋值，请在 Inspector 里拖上骨架根上的 Animator");
-            return;
-        }
-        RuntimeAnimatorController controller = characterBase.isGirl ? femaleAnimController : maleAnimController;
-        if (controller == null)
-            throw new UnityException("CharacterAnimation: 未赋值 femaleAnimController/maleAnimController，请检查 Inspector 配置");
-        overrideController = new AnimatorOverrideController
-        {
-            runtimeAnimatorController = controller
-        };
-        anim.runtimeAnimatorController = overrideController;
-        baseController = controller;
-        RebuildAnimationOverrides(); // 加载当前穿着的衣服动画（平时衣服播自身动画）
-        // 原版 AvatarBase.PlayAnima：主体 + 4 个衣服层（Hair/Coat/Skirt/Wing）同步播放
-        string[] requiredStates = { "Idle", "Run", "FlyIdle", "FlyRun", idleExtensionStateName };
-        foreach (string stateName in requiredStates)
-        {
-            if (!anim.HasState(0, Animator.StringToHash(stateName)))
-                throw new UnityException("Animator Controller 缺少状态 '" + stateName + "'，请检查 controller 配置");
-        }
-        string[] layerPrefixes = { "Hair", "Coat", "Skirt", "Wing" };
-        for (int layer = 1; layer <= layerPrefixes.Length; layer++)
-        {
-            string layerIdle = layerPrefixes[layer - 1] + "Idle";
-            if (!anim.HasState(layer, Animator.StringToHash(layerIdle)))
-                throw new UnityException("Animator Controller 第 " + layer + " 层缺少状态 '" + layerIdle + "'，请检查 controller 配置");
-        }
-    }
-
-    /// <summary>
-    /// 切换性别：换用对应性别的 Animator 控制器并重建衣服动画覆盖。
-    /// 只负责动画侧；骨架重建、穿衣、骨骼缓存由 Equip.SetGender 负责，两者需一起调用。
-    /// 不做 "性别没变就跳过" 的判断：重建骨架后即使性别不变，控制器和衣服动画覆盖也得重建，
-    /// 是否真的需要切换由调用方判断。
-    /// 若尚未 Initialize（骨架没生成），这里直接跳过 —— Initialize 会自己按 characterBase.isGirl 取控制器。
-    /// </summary>
-    public void SetGender(bool newIsGirl)
-    {
-        if (characterBase == null)
-        {
-            Log.Error("SetGender: characterBase 为 null（Awake 未找到 CharacterBase）");
-            return;
-        }
-
-        characterBase.isGirl = newIsGirl;
-
-        // 控制器还没建起来 → 无需换
-        if (anim == null || overrideController == null) return;
-
-        RuntimeAnimatorController controller = newIsGirl ? femaleAnimController : maleAnimController;
-        if (controller == null)
-        {
-            Log.Error("[CharacterAnimation] SetGender: 对应性别的 Animator Controller 未赋值，动画不会切换");
-            return;
-        }
-
-        // AnimatorOverrideController 的 runtimeAnimatorController 不能直接换控制器，
-        // 必须整个重建一个，否则覆盖映射还挂在旧控制器上
-        overrideController = new AnimatorOverrideController
-        {
-            runtimeAnimatorController = controller
-        };
-        anim.runtimeAnimatorController = overrideController;
-        baseController = controller;
-
-        // 按新性别重新加载衣服动画（哪些层要覆盖由 PartPrefixMap 决定）
-        RebuildAnimationOverrides();
-
-        // 重建控制器会复位状态机：清播放记忆、清待机小动作状态，
-        // 让下一帧 Update 按当前移动状态重新 CrossFade
-        lastAnimName = "";
-        isPlayingIdleExtension = false;
-        idleExtensionTimer = 0f;
-        idleExtensionDelay = 0f;
-    }
-
-    private void Update()
-    {
-        if (!initialized)
-        {
-            Initialize();
-            if (anim == null)
-            {
-                // 骨架未就绪 → 不置位，下一帧重试
-                return;
-            }
-            initialized = true;
-            // 刚给 Animator 换控制器的一帧不要急着 CrossFade：
-            // 状态机需要一整帧完成新控制器初始化，同帧发的 CrossFade 可能被丢弃，
-            // 而 lastAnimName 一旦记下 "Idle" 就会永久挡住重试 → 卡 A-pose。
-            // 这一帧直接跳过播放，下一帧再正常发起。
-            lastAnimName = "";
-            return;
-        }
-
-        if (pendingOverrideRebuild)
-        {
-            pendingOverrideRebuild = false;
-            RebuildAnimationOverrides(); // 换装后重建衣服动画
-
-            // 重建会重设 Animator（状态机复位、lastAnimName 清空）：
-            // 若正处于动作中（如浴巾换装后的 Bath），立即补播动作动画，避免被默认/Idle 顶掉
-            if (isDoingAction && !string.IsNullOrEmpty(actionStateName))
-                PlayAnimationLayer(actionStateName, 0);
-        }
-
-        // 强制模式：不检测速度/落地/死亡，只认外部设定的 moveState。
-        // 重建衣服动画会复位播放记忆，所以这里每帧都比对一次名字，不一致就重播。
-        if (bForceSetAnimationState)
-        {
-            EAnimationState wanted = moveState;
-            (string name, bool allLayers) = MoveStateToAnimation(wanted);
-
-            if (!forcedApplied || forcedMoveState != wanted || lastAnimName != name)
-                ApplyForcedAnimation(wanted, name, allLayers);
-
-            return;
-        }
-
-        if (isDead)
-            return;
-
-        // Revive 动画播放期间不切换状态动画；播完自动切回 Idle（不依赖外部回调时序）
-        if (isReviving)
-        {
-            AnimatorStateInfo stateInfo = anim.GetCurrentAnimatorStateInfo(0);
-            if (stateInfo.IsName("Revive") && stateInfo.normalizedTime >= 1f)
-            {
-                isReviving = false;
-                lastAnimName = "";
-                PlayLocomotionAllLayers("Idle");
-                onReviveFinished?.Invoke();
-                onReviveFinished = null;
-            }
-            return;
-        }
-
-        // 动作（坐/躺/洗澡等）期间锁定动画：不按移动状态切换，避免 Bath/Lie/Sit 被 Idle 顶掉
-        if (isDoingAction)
-            return;
-
-        // 状态由宿主算好（CharacterBase 按速度/落地/跑键算 UpdateMoveState），这里只用
-        moveState = characterBase.moveState;
-        UpdateIdleExtension();
-        PlayAnimationForCurrentState();
-    }
+    private bool idleExtensionPlaying;
 
     /// <summary>
     /// 站定一段时间后随机触发一次 IdleExtension（待机小动作），播完自动回到 Idle。
@@ -286,25 +193,25 @@ public class CharacterAnimation : MonoBehaviour, IDeathAndRevive
     /// </summary>
     private void UpdateIdleExtension()
     {
-        if (isDoingAction) return;
-        
-        if (moveState != EAnimationState.IDLE)
+        if (isDead) return;
+
+        // 只有 IDLE（准备触发小动作）和"小动作播放中"这两种情况允许往下走。
+        // SIT/LIE/BATH/SHOWER 等"被动作占用"的状态一律不放行 —— 尤其 SHOWER 的动作动画名也是 Idle，
+        // 跟普通站立在控制器上无法区分，必须靠枚举把它挡在外面。计时同时清零，起身后重新计。
+        if (animState != EAnimationState.IDLE && !idleExtensionPlaying)
         {
-            if (isPlayingIdleExtension)
-            {
-                isPlayingIdleExtension = false;
-                lastAnimName = "";
-            }
             idleExtensionTimer = 0f;
             idleExtensionDelay = 0f;
             return;
         }
 
-        if (isPlayingIdleExtension)
+        // 待机小动作播完回到IDLE，交回正常分发
+        if (idleExtensionPlaying)
         {
             if (Time.time - idleExtensionStartTime >= idleExtensionClipLength)
             {
-                isPlayingIdleExtension = false;
+                idleExtensionPlaying = false;
+                animState = EAnimationState.IDLE;
                 lastAnimName = "";
                 idleExtensionTimer = 0f;
                 idleExtensionDelay = 0f;
@@ -324,37 +231,51 @@ public class CharacterAnimation : MonoBehaviour, IDeathAndRevive
             AnimationClip clip = pool[Random.Range(0, pool.Length)];
             if (clip == null)
                 return;
+            if (overrideController == null) return;   // 未启用覆盖控制器时不播小动作
             overrideController[idleExtensionStateName] = clip;
-            // AnimatorOverrideController 修改后必须重新赋值，Animator 才会重载新的 override 映射
+            // AnimatorOverrideController修改后必须重新赋值，Animator才会重载新的 override 映射
             anim.runtimeAnimatorController = overrideController;
             idleExtensionClipLength = clip.length;
             idleExtensionStartTime = Time.time;
-            isPlayingIdleExtension = true;
             idleExtensionTimer = 0f;
             idleExtensionDelay = 0f;
+            // 把有效状态切到IDLE_EXTENSION。否则下一帧ApplyInjectedState会按 IDLE
+            // 算出"Idle"并 CrossFade，小动作一帧就被自己顶掉；同时 switch 的
+            // case IDLE_EXTENSION 也才走得到。
+            animState = EAnimationState.IDLE_EXTENSION;
+            // 标记小动作播放中：从这一刻起状态机由小动作独占，宿主的 IDLE 推送不能抢占
+            idleExtensionPlaying = true;
             anim.CrossFade(idleExtensionStateName, CROSSFADE_DURATION, 0, 0f);
             lastAnimName = idleExtensionStateName;
         }
     }
 
+    ////////////////////////////////////////衣服动画覆盖////////////////////////////////////////
+    /// <summary>衣服层前缀:（部位槽位, 动画目录名）。对应 hotfix/equips/animations/{gender}/clothing/{目录}/...</summary>
+    private static readonly (string prefix, EClothType slot, string folder)[] PartPrefixMap =
+    {
+        ("Hair",  EClothType.HAIR,   "hair"),
+        ("Coat",  EClothType.UPPER,  "coat"),
+        ("Skirt", EClothType.BOTTOM, "skirt"),
+    };
+
+    /// <summary>换装后置位，下一帧重建衣服动画覆盖</summary>
+    private bool pendingOverrideRebuild;
+
+    /// <summary>换装完成 → 下一帧重建衣服动画覆盖</summary>
+    private void OnEquipChangedHandler()
+    {
+        pendingOverrideRebuild = true;
+    }
+
     /// <summary>
-    /// 按当前穿着衣服的系列，把控制器 Hair/Coat/Skirt 层里的占位 clip 替换为对应衣服的动画
-    /// （hotfix/equips/animations/{gender}/clothing/{部位}/{系列}/{clip}，clip 名 = 系列+部位+状态）。
+    /// 按当前穿着衣服的系列，把控制器Hair/Coat/Skirt层里的占位clip替换为对应衣服的动画
+    /// 存储路径必须按照（hotfix/equips/animations/{gender}/clothing/{部位}/{系列}/{clip}，clip 名 = 系列+部位+状态）。
     /// 平时衣服层播真实衣服动画。
-    /// 逐部位统计并输出：系列、命中数、缺失数；完全没有动画时明确 Warn，不静默。
+    /// 逐部位统计并输出：系列命中数缺失数，完全没有动画时Warn。
     /// </summary>
     private void RebuildAnimationOverrides()
     {
-        if (anim == null || overrideController == null || baseController == null)
-        {
-            return;
-        }
-        if (characterBase == null || equipSystem == null)
-        {
-            Log.Error("重建衣服动画覆盖失败：CharacterBase 或 Equip 组件缺失");
-            return;
-        }
-
         string genderDir = characterBase.isGirl ? "female" : "male";
         string animRoot = "hotfix/equips/animations/" + genderDir + "/clothing/";
 
@@ -377,7 +298,7 @@ public class CharacterAnimation : MonoBehaviour, IDeathAndRevive
             }
             if (placeholders.Count == 0)
             {
-                // Initialize 已校验过 Hair/Coat/SkirtIdle 状态存在，正常不会走到
+                // Initialize已校验过Hair/Coat/SkirtIdle状态存在，正常不会走到
                 continue;
             }
 
@@ -408,118 +329,231 @@ public class CharacterAnimation : MonoBehaviour, IDeathAndRevive
             stats.Add(prefix + "(" + series + "): " + found + "/" + (found + missing));
         }
 
-        if (pairs.Count > 0)
+        if (overrideController == null)
         {
-            overrideController.ApplyOverrides(pairs);
-            // AnimatorOverrideController 修改后必须重新赋值，Animator 才会重载新的 override 映射
-            anim.runtimeAnimatorController = overrideController;
-        }
-        else
-        {
-            // 当前着装完全没有可用动画 → override 保持基础控制器映射（空覆盖），并明确提示（不静默）
-            anim.runtimeAnimatorController = overrideController;
-        }
-
-        // 重新赋值控制器会重置状态机：清空播放记忆，下一帧按当前移动状态重新 CrossFade
-        lastAnimName = "";
-        isPlayingIdleExtension = false;
-    }
-
-    /// <summary>
-    /// 强制模式入口：外部直接指定要播的动画状态，不再依赖速度/落地/死亡等检测。
-    /// 会把 bForceSetAnimationState 打开，之后每帧按 moveState 播对应动画。
-    /// </summary>
-    public void SetAnimationState(EAnimationState state)
-    {
-        if (characterBase == null)
-        {
-            Log.Error("characterBase为null！");
+            // useClothOverrideController 关闭时不套 override controller，无需重建衣服覆盖
+            lastAnimName = "";
             return;
         }
 
-        bForceSetAnimationState = true;
-        moveState = state;
+        // ── 重建完整覆盖表 ──
+        // AnimatorOverrideController.ApplyOverrides 是「累加」的：它把条目并进内部覆盖表，
+        // 既不会清除上一次留下的条目，也不会清除历史遗留的 null 条目。
+        // 一旦某个主状态（Idle/Run/FlyIdle/FlyRun 等）在覆盖表里被映射成 null，
+        // 该状态就播不到任何 clip —— 表现为 Animator 状态机的 normalizedTime 正常推进，
+        // 但骨骼一根都不动（实测 layer0 当前 clip 数 = 0）。
+        //
+        // 所以这里不只追加本帧的 pairs，而是取全部覆盖条目重算一遍：
+        //   - 衣服占位（Hair/Coat/Skirt/Wing/Tail/Shoes 开头）→ 用本帧加载到的真实衣服动画
+        //   - 其它条目（Idle/Run/Dead/... 等主状态）→ 一律复位回基础控制器的同名 clip
+        //   - 两边都为 null 的条目丢弃
+        // 这样无论之前谁往覆盖表里写过 null，每次重建都会把它修回来。
+        var full = new List<KeyValuePair<AnimationClip, AnimationClip>>();
+        overrideController.GetOverrides(full);
 
-        // 骨架/控制器还没就绪时不播，等 Initialize 完成后的第一帧 Update 补上
-        if (anim == null || overrideController == null) return;
-
-        (string name, bool allLayers) = MoveStateToAnimation(state);
-        ApplyForcedAnimation(state, name, allLayers);
-    }
-
-    private void ApplyForcedAnimation(EAnimationState state, string animName, bool allLayers)
-    {
-        // 走路和跑步共用 "Run"，靠播放速度区分
-        anim.speed = (state == EAnimationState.RUN) ? 2f : 1f;
-
-        if (allLayers)
-            PlayLocomotionAllLayers(animName);
-        else
-            PlayAnimationLayer(animName, 0);
-
-        lastAnimName = animName;
-        forcedMoveState = state;
-        forcedApplied = true;
-    }
-
-    /// <summary>EMoveState → 控制器状态名 + 是否要同步播 5 个层（衣服层有没有该状态由资产决定）</summary>
-    private static (string name, bool allLayers) MoveStateToAnimation(EAnimationState state)
-    {
-        switch (state)
+        var baseByName = new Dictionary<string, AnimationClip>();
+        if (baseController != null)
         {
-            case EAnimationState.IDLE:     return ("Idle", true);
-            case EAnimationState.MOVE:     return ("Run", true);      // 走：1 倍速
-            case EAnimationState.RUN:      return ("Run", true);      // 跑：2 倍速
-            case EAnimationState.FLY_IDLE: return ("FlyIdle", true);
-            case EAnimationState.FLY_RUN:  return ("FlyRun", true);
-            case EAnimationState.DEAD:     return ("Dead", true);
-            case EAnimationState.REVIVE:   return ("Revive", true);
-            case EAnimationState.SIT:      return ("Sit", true);      // 衣服层有 HairSit/CoatSit/SkirtSit/WingSit
-            case EAnimationState.LIE:      return ("Lie", false);     // 只有主体层有该状态
-            case EAnimationState.BATH:     return ("Bath", false);    // 只有主体层有该状态
-            default:
-                throw new UnityException(
-                    $"CharacterAnimation: EMoveState.{state} 还没有对应的动画状态名，" +
-                    "请在 MoveStateToAnimation 里补上");
+            foreach (AnimationClip c in baseController.animationClips)
+            {
+                if (c != null && !baseByName.ContainsKey(c.name))
+                    baseByName[c.name] = c;
+            }
         }
+
+        var clothPairs = new Dictionary<string, AnimationClip>();
+        foreach (var kv in pairs)
+        {
+            if (kv.Key != null)
+                clothPairs[kv.Key.name] = kv.Value;
+        }
+
+        int resetCount = 0;
+        for (int i = 0; i < full.Count; i++)
+        {
+            AnimationClip key = full[i].Key;
+            if (key == null) continue;
+
+            AnimationClip target;
+            if (clothPairs.TryGetValue(key.name, out AnimationClip cloth))
+            {
+                target = cloth;                       // 衣服占位 → 真实衣服动画
+            }
+            else
+            {
+                baseByName.TryGetValue(key.name, out target);   // 主状态 → 基础 clip
+                if (target != null && full[i].Value != target) resetCount++;
+            }
+            full[i] = new KeyValuePair<AnimationClip, AnimationClip>(key, target);
+        }
+
+        overrideController.ApplyOverrides(full);
+        // AnimatorOverrideController 修改后必须重新赋值，Animator 才会重载新的 override 映射
+        anim.runtimeAnimatorController = overrideController;
+
+        if (resetCount > 0)
+            Log.Info("[CharacterAnimation] 覆盖表里有 " + resetCount + " 条无效条目已复位回基础 clip（原本会播不出动画）");
+
+        // 重新赋值控制器会重置状态机：清空播放记忆，下一帧按当前 animState 重新 CrossFade
+        lastAnimName = "";
     }
 
-    private void PlayAnimationForCurrentState()
-    {
-        string animName;
+    ////////////////////////////////////////状态注入与分发////////////////////////////////////////
+    private string lastAnimName = "";
 
-        switch (moveState)
+    /// <summary>
+    /// 当前动画状态。这是本组件唯一的驱动源：外部通过 <see cref="SetAnimationState"/>
+    /// 你需要对其进行注入，本组件只负责怎么播，不检测速度，落地，死亡，也不从宿主的moveState拉取。
+    /// 默认IDLE，Controller就绪后由Update自动应用一次。
+    /// </summary>
+    [SerializeField] private EAnimationState animState = EAnimationState.IDLE;
+
+    /// <summary>
+    /// 这是外部注入入口，指定要播的动画状态。是本组件唯一的驱动方式，你只需要调用这个，状态机由外部自己实现
+    /// 注意IDLE_EXTENSION无意义，因为他是由组件内部逻辑管理，会被当作IDLE。
+    /// </summary>
+    public void SetAnimationState(EAnimationState state)
+    {
+        if (state == EAnimationState.IDLE_EXTENSION)
         {
+            Log.Info("传入了IDLE_EXTENSION，已按IDLE处理");
+            state = EAnimationState.IDLE;
+        }
+
+        // 待机小动作播放期间：
+        //   宿主推来的 IDLE 直接丢弃 —— 小动作就是站立表现，不能被 IDLE 抢回主体层。
+        //   否则会出现：小动作刚 CrossFade 到 IdleExtension，下一帧宿主推 IDLE 就把状态抢回 IDLE、
+        //   立刻 CrossFade("Idle") 覆盖，然后小动作分支又把状态改回 IDLE_EXTENSION……
+        //   表现为「一播就回到 IDLE + 全身每帧抽搐」，直到小动作时长耗尽才停。
+        //   推来的是别的状态（移动/跳跃/下落/死亡等）则立即打断小动作，交回正常分发 ——
+        //   否则小动作会在角色已经走起来之后还站着播。
+        if (idleExtensionPlaying)
+        {
+            if (state == EAnimationState.IDLE) return;
+
+            idleExtensionPlaying = false;
+            idleExtensionTimer = 0f;
+            idleExtensionDelay = 0f;
+        }
+
+        // 幂等：状态没变化且播放记忆还在，就直接返回。
+        // 宿主会在 Update 里每帧推送当前状态，若无条件往下走，
+        // 每次都会清掉 lastAnimName，使 ApplyInjectedState 的
+        // 「名字没变就不重播」守卫失效 → 每帧一次 CrossFade → 状态机被反复重启
+        // （实测 normalizedTime 从 0.0353 回绕到 0.0065，动画永远播不完，表现就是定格在一个姿势）。
+        //
+        // lastAnimName 为空表示"播放记忆已被清掉、需要重播"（例如待机小动作播完后
+        // UpdateIdleExtension 自己把状态改回 IDLE 并清了记忆），这种情况必须放行，
+        // 否则会永远回不到 Idle。
+        if (animState == state && !string.IsNullOrEmpty(lastAnimName)) return;
+
+        animState = state;
+
+        lastAnimName = "";
+        ApplyInjectedState();
+    }
+
+    /// <summary>
+    /// 按注入的 <see cref="animState"/> 分发播放。
+    /// 唯一的状态动画映射点：状态名、是否同步播5层，anim.speed都在这里决定。
+    /// </summary>
+    private void ApplyInjectedState()
+    {
+        // 复活期间不切别的状态；Revive播完自动回 Idle（见 Update 里的自愈判断，
+        // 外部 LocalPlayer 的 RegisterDelayTask 仍会兜底再调一次 OnReviveFinished）
+        if (isReviving && animState == EAnimationState.REVIVE)
+        {
+            AnimatorStateInfo reviveInfo = anim.GetCurrentAnimatorStateInfo(0);
+            if (reviveInfo.IsName("Revive") && reviveInfo.normalizedTime >= 1f)
+            {
+                OnReviveFinished();
+                return;
+            }
+        }
+
+        string animName;
+        bool allLayers = true;
+
+        switch (animState)
+        {
+            case EAnimationState.IDLE:
+                animName = "Idle";
+                break;
+            case EAnimationState.MOVE:              // 走：与 RUN 共用 "Run" 状态，1 倍速
+            case EAnimationState.RUN:               // 跑：2 倍速
+                animName = "Run";
+                break;
             case EAnimationState.FLY_IDLE:
                 animName = "FlyIdle";
                 break;
             case EAnimationState.FLY_RUN:
                 animName = "FlyRun";
                 break;
-            case EAnimationState.MOVE:
-            case EAnimationState.RUN:
-                animName = "Run";
+            case EAnimationState.DEAD:
+                animName = "Dead";
                 break;
-            case EAnimationState.IDLE:
-            default:
+            case EAnimationState.REVIVE:
+                animName = "Revive";
+                break;
+            case EAnimationState.SIT:
+                animName = "Sit";
+                break;
+            case EAnimationState.LIE:
+                animName = "Lie";
+                allLayers = false;                  // 只有主体层有该状态
+                break;
+            case EAnimationState.BATH:
+                animName = "Bath";
+                allLayers = false;                  // 只有主体层有该状态
+                break;
+            case EAnimationState.SHOWER:
+                // 淋浴：动作动画就是普通站立 Idle，只有主体层播。
+                // 它跟 IDLE 的区别只在"不允许触发待机小动作"（见 UpdateIdleExtension）。
                 animName = "Idle";
+                allLayers = false;
                 break;
+            case EAnimationState.IDLE_EXTENSION:
+                // 待机小动作：只在 IDLE 下由 UpdateIdleExtension 负责计时与播放，
+                // 这里不参与分发
+                return;
+            default:
+                throw new UnityException(
+                    $"CharacterAnimation: EAnimationState.{animState} 还没有对应的动画状态名，" +
+                    "请在 ApplyInjectedState 里补上");
         }
 
         // 走路和跑步共用控制器的 "Run" 状态，靠播放速度区分：走 1 倍速、跑 2 倍速
-        anim.speed = (moveState == EAnimationState.RUN) ? 2f : 1f;
+        anim.speed = (animState == EAnimationState.RUN) ? 2f : 1f;
 
-        // IdleExtension 播放期间停留在该状态，不切回 Idle（由 UpdateIdleExtension 播完后再放行）
-        if (isPlayingIdleExtension && animName == "Idle")
+        // 注：这里不再需要「待机小动作期间别用 Idle 顶掉」的守卫 ——
+        // 小动作播放时 animState 就是 IDLE_EXTENSION，上面的 switch 已经提前 return。
+
+        if (animName == lastAnimName)
             return;
 
-        if (string.IsNullOrEmpty(animName) || animName == lastAnimName)
-            return;
-
-        PlayLocomotionAllLayers(animName);
+        if (allLayers)
+        {
+            PlayAnimationLayer(animName, 0);
+            PlayAnimationLayer("Hair" + animName, 1);
+            PlayAnimationLayer("Coat" + animName, 2);
+            PlayAnimationLayer("Skirt" + animName, 3);
+            PlayAnimationLayer("Wing" + animName, 4);
+        }
+        else
+            PlayAnimationLayer(animName, 0);
 
         lastAnimName = animName;
     }
+
+    /// <summary>
+    /// 当前实际在播的动画类型，可用于上报给服务端转发给别人
+    /// </summary>
+    public EAnimationState GetPlayingAnimationType()
+    {
+        return animState == EAnimationState.IDLE_EXTENSION ? EAnimationState.IDLE : animState;
+    }
+
+    ////////////////////////////////////////播放原语////////////////////////////////////////
 
     public void PlayAnimationLayer(string stateName, int layer)
     {
@@ -532,114 +566,33 @@ public class CharacterAnimation : MonoBehaviour, IDeathAndRevive
         Log.Error("CharacterAnimation: Animator Controller 第 " + layer + " 层缺少状态 '" + stateName + "'，请检查 controller 配置");
     }
 
-    /// <summary>
-    /// 常规移动状态（Idle/Run/FlyIdle/FlyRun）同步播到 5 个播放层：
-    /// 主体层用原名，衣服层用 "层前缀 + 名字"（HairIdle/CoatRun/SkirtFlyIdle/WingFlyRun）。
-    /// </summary>
-    public void PlayLocomotionAllLayers(string stateName)
-    {
-        PlayAnimationLayer(stateName, 0);
-        PlayAnimationLayer("Hair" + stateName, 1);
-        PlayAnimationLayer("Coat" + stateName, 2);
-        PlayAnimationLayer("Skirt" + stateName, 3);
-        PlayAnimationLayer("Wing" + stateName, 4);
-    }
+    ////////////////////////////////////////死亡与复活////////////////////////////////////////
 
-    /// <summary>
-    /// 当前实际在播的动画类型（供上报给服务端转发给别人），直接用 EMoveState 表示。
-    /// 判定顺序与 Update 里的优先级严格一致：死亡 → 复活 → 动作 → 待机小动作 → 移动状态。
-    /// </summary>
-    public EAnimationState GetPlayingAnimationType()
-    {
-        // 还没初始化完（LocalPlayer.Update 可能比本脚本的 Update 先跑）：
-        // 这一刻确实没在播任何动作，报 IDLE 是准确答案，不该抛异常。
-        // 抛的话每帧一条，只是在刷屏。
-        if (!initialized || anim == null)
-            return EAnimationState.IDLE;
-
-        if (isDead) return EAnimationState.DEAD;
-        if (isReviving) return EAnimationState.REVIVE;
-
-        // 动作占用期间锁的是动作动画，不是移动动画
-        if (isDoingAction)
-        {
-            switch (actionStateName)
-            {
-                case "Idle": return EAnimationState.IDLE;   // 淋浴：普通站立
-                case "Sit":  return EAnimationState.SIT;
-                case "Lie":  return EAnimationState.LIE;
-                case "Bath": return EAnimationState.BATH;
-                default:
-                    throw new UnityException(
-                        $"CharacterAnimation: 动作动画 '{actionStateName}' 还没有对应的 EMoveState，" +
-                        "新增动作时请在 EMoveState 里补一个值并在 GetPlayingAnimationType 里映射");
-            }
-        }
-
-        // 待机小动作属于站立表现的一类
-        if (isPlayingIdleExtension) return EAnimationState.IDLE;
-
-        switch (moveState)
-        {
-            // 移动状态本身就是最好的动画类型，直接返回。
-            // MOVE / RUN 共用控制器的 "Run" 状态，靠 anim.speed 区分（1 倍速走 / 2 倍速跑）。
-            case EAnimationState.IDLE:
-            case EAnimationState.MOVE:
-            case EAnimationState.RUN:
-            case EAnimationState.FLY_IDLE:
-            case EAnimationState.FLY_RUN:
-                return moveState;
-
-            default:
-                throw new UnityException(
-                    $"CharacterAnimation: 移动状态 {moveState} 还没有对应处理，" +
-                    "请在 GetPlayingAnimationType 里补上");
-        }
-    }
-
-    public void OnReviveFinished()
-    {
-        isReviving = false;
-        lastAnimName = "";
-        isPlayingIdleExtension = false;
-        // 复活播完，移动状态从 REVIVE 切回 IDLE
-        if (characterBase != null)
-            moveState = EAnimationState.IDLE;
-        // 强制切回 Idle（主体 + 各衣服层），避免停留在 Revive 最后一帧
-        PlayLocomotionAllLayers("Idle");
-    }
+    private bool isDead;
+    private bool isReviving;
+    public System.Action onReviveFinished;
 
     public void OnPlayerDeath()
     {
-        if (!initialized)
-        {
-            Initialize();
-            if (anim == null)
-                return; // 骨架未就绪，无法播放死亡动画，下一帧 Update 重试初始化
-            initialized = true;
-        }
         isDead = true;
-        lastAnimName = "";
-        isPlayingIdleExtension = false;
-        // 强制所有层播放 Dead（Base 原名 Dead，衣服层带前缀 HairDead/CoatDead/SkirtDead/WingDead）
-        PlayLocomotionAllLayers("Dead");
+        anim.enabled = false;
     }
 
+    // 暂时废弃，角色不能复活
     public void OnPlayerRevive()
     {
-        if (!initialized)
-        {
-            Initialize();
-            if (anim == null)
-                return; // 骨架未就绪，无法播放复活动画，下一帧 Update 重试初始化
-            initialized = true;
-        }
         isDead = false;
         isReviving = true;
-        lastAnimName = "";
-        isPlayingIdleExtension = false;
-        // 强制所有层播放 Revive（Base 原名 Revive，衣服层带前缀 HairRevive/CoatRevive/SkirtRevive/WingRevive）
-        PlayLocomotionAllLayers("Revive");
+        // 走统一注入：Revive（主体层 "Revive"，衣服层带前缀 HairRevive/CoatRevive/SkirtRevive/WingRevive）
+        SetAnimationState(EAnimationState.REVIVE);
+    }
+
+    // 暂时废弃，角色不能复活，也就没有复活结束
+    public void OnReviveFinished()
+    {
+        isReviving = false;
+        // 复活播完，交回 IDLE
+        SetAnimationState(EAnimationState.IDLE);
     }
 
     /// <summary>

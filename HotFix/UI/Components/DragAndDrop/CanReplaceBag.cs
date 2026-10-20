@@ -13,8 +13,9 @@ public class CanReplaceBag : MonoBehaviour, IDropRecevier
                 {
                     var ifIsBag = item as BagpackBase;
                     if (ifIsBag == null) return false;
-                    Context.localPlayer.inventory.SetBag(ifIsBag);
-                    break;
+                    // TODO: 需要更新API
+                    // Context.localPlayer.inventory.SetBag(ifIsBag);
+                    return false;
                 }
                 // 背包不可能来自装备区域。
                 case EOperateLocation.EquipArea:

@@ -28,7 +28,10 @@ public class ClientConnect : MonoBehaviour
     private Action<Vector3, ESceneType> onConnectionSuccess;
     private Action<string> onConnectionLost;
 
-    // 挂载后由外部调用，再 Start 才会连
+    // 复用的发送缓冲区
+    private readonly NetDataWriter sendWriter = new NetDataWriter();
+
+    // 由外部调用
     public void Init(string IP, int port, SaveData player)
     {
         connectedIP = IP;
@@ -36,13 +39,15 @@ public class ClientConnect : MonoBehaviour
         plyData = player;
     }
 
+    private Action<ServerCommonResponse> _onCommonMessageResponse;
+
     /// <summary>
-    /// 启动客户但
+    /// 启动客户端
     /// </summary>
     /// <param name="onConnectionSuccess">服务器接收了你的连接，允许你加入，要执行的事件</param>
     /// <param name="onConnectionLost">连接丢失，要执行的事件</param>
     /// <returns>是否成功</returns>
-    public bool StartClient(Action<Vector3, ESceneType> onConnectionSuccess, Action<string> onConnectionLost)
+    public bool StartClient(Action<Vector3, ESceneType> onConnectionSuccess, Action<string> onConnectionLost, Action<ServerCommonResponse> onCommonMessageResponse)
     {
         this.onConnectionSuccess = onConnectionSuccess;
         this.onConnectionLost = onConnectionLost;
@@ -79,6 +84,8 @@ public class ClientConnect : MonoBehaviour
         }
 
         Debug.Log($"正在连接 {connectedIP}:{connectedPort} ...");
+
+        _onCommonMessageResponse = onCommonMessageResponse;
         return true;
     }
 
@@ -105,9 +112,17 @@ public class ClientConnect : MonoBehaviour
         processor.SubscribeNetSerializable<PlayerCountResponse>(OnPlayerCountResponse);
         processor.SubscribeNetSerializable<LoginResponse>(OnLoginResponse);
         processor.SubscribeNetSerializable<NewPlayerEntered>(OnNewPlayerEntered);
-        processor.SubscribeNetSerializable<OtherPlayerEnterNewScene>(OnOtherPlayerEnterNewScene);
-        processor.SubscribeNetSerializable<PlayerExitGame>(OnOtherPlayerExitGame);
+        processor.SubscribeNetSerializable<ServerOtherPlayerEnterNewScene>(OnOtherPlayerEnterNewScene);
+        processor.SubscribeNetSerializable<ServerPlayerExitGame>(OnOtherPlayerExitGame);
         processor.SubscribeNetSerializable<OtherPlayerLocationSync>(OnOtherPlayerLocationSync);
+        processor.SubscribeNetSerializable<ServerPlayerDeath>(OnPlayerDeath);
+        processor.SubscribeNetSerializable<ServerInventorySync>(OnInventorySync);
+        processor.SubscribeNetSerializable<ServerCommonResponse>(OnServerCommonResponse);
+    }
+
+    private void OnServerCommonResponse(ServerCommonResponse response)
+    {
+        _onCommonMessageResponse?.Invoke(response);
     }
 
     // ---------- 连接事件 ----------
@@ -121,15 +136,27 @@ public class ClientConnect : MonoBehaviour
 
     private void OnOtherPlayerLocationSync(OtherPlayerLocationSync msg)
     {
-        var player = Context.sc.scenePlayers.Find(p => p.netPlayer.playerId == msg.playerId);
+        var player = Context.sc.scenePlayers.Find(p => p.netPlayer.playerName == msg.playerName);
         if (player == null)
         {
-            PK.Log.Error($"位置同步失败：场景里找不到 playerId={msg.playerId} 的玩家，这不该发生！");
+            PK.Log.Error($"位置同步时场景里找不到playerName={msg.playerName}，这不该发生！");
             return;
         }
 
         player.SetTransform(msg.location, msg.rotation);
         player.SetAnimation(msg.currentAnimation);
+    }
+
+    private void OnPlayerDeath(ServerPlayerDeath death)
+    {
+        // 首先对比死的人是不是自己
+        var localPly = Context.localPlayer;
+        // 死的人是自己，让自己死
+        if (localPly.playerSaveData.playerName == death.playerName)
+        {
+            localPly.Dead();
+        }
+        Context.sc.MarkPlayerDead(death.playerName, death.deathVelocity, death.deathAngularVelocity);
     }
 
     /// <summary>
@@ -140,19 +167,26 @@ public class ClientConnect : MonoBehaviour
         connectState = ClientState.Connected;
         Debug.Log($"[+] 已连接到服务器: {peer}，开始发送登录请求");
 
-        var w = new NetDataWriter();
+        sendWriter.Reset();
         var req = new LoginRequest();
+
+        // 调试阶段：直接替换为一个调试用背包
+#if UNITY_EDITOR
+        plyData.SetBag(Context.Item.GetItemCopyById(1425) as BagpackBase);
+#endif
+        // 向服务器发送背包同步请求（SaveData里面已经包含），这是唯一客户端权威的地方，因为数据存在本地，必须先传到服务器上
+        // 后续都将是服务端权威，任何操作都要经过服务端批准。
         req.player = plyData;
-        processor.WriteNetSerializable(w, ref req);
-        peer.Send(w, 0, DeliveryMethod.ReliableOrdered);
+        processor.WriteNetSerializable(sendWriter, ref req);
+        peer.Send(sendWriter, 0, DeliveryMethod.ReliableOrdered);
     }
 
     // 其他玩家退出游戏的消息
-    private void OnOtherPlayerExitGame(PlayerExitGame message)
+    private void OnOtherPlayerExitGame(ServerPlayerExitGame message)
     {
-        long playerId = message.playerId;
+        string playerName = message.playerName;
         // 把他从场景中移除
-        Context.sc.RemovePlayerById(playerId);
+        Context.sc.RemovePlayerByName(playerName);
     }
 
     /// <summary>
@@ -180,6 +214,65 @@ public class ClientConnect : MonoBehaviour
         Debug.Log($"人数：{r.count}");
         foreach (var n in r.playerNames) Debug.Log($"  - {n}");
     }
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    ///////////////////////////////////////////////////换装开始/////////////////////////////////////////////////////////
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    private void OnInventorySync(ServerInventorySync msg)
+    {
+        var localPlayer = Context.localPlayer;
+        if (localPlayer == null)
+        {
+            PK.Log.Error("OnInventorySync没有本地玩家，这不该发生！");
+            return;
+        }
+
+        var saveData = localPlayer.playerSaveData;
+        if (saveData == null)
+        {
+            PK.Log.Error("OnInventorySync时本地玩家没有SaveData，已忽略");
+            return;
+        }
+
+        if (msg.playerName != saveData.playerName)
+        {
+            var netPlayer = Context.sc.FindPlayerByName(msg.playerName);
+            if (netPlayer == null)
+            {
+                #if UNITY_EDITOR
+                PK.Log.Info("OnInventorySync找不到玩家：" + msg.playerName + "如果是不同场景的人物请忽略");
+                #endif
+                return;
+            }
+
+            netPlayer.SetOutfit(msg.equipedCloth, msg.isGirl);
+
+            if (msg.currentEquipedTool is ToolBase remoteTool)
+                netPlayer.equipSystem.SetTool(remoteTool);
+            else
+                netPlayer.equipSystem.ClearTool();
+
+            return;
+        }
+
+        // 必须造新对象传进去，否则 SetSaveData 内部的相等比较会因同一引用直接短路
+        var incoming = new SaveData
+        {
+            playerName = saveData.playerName,
+            worldName = saveData.worldName,
+            isGirl = msg.isGirl,
+            equipedCloth = msg.equipedCloth,
+            handSpace = msg.handSpace,
+            equipedBag = msg.equipedBag,
+            currentEquipedTool = msg.currentEquipedTool
+        };
+
+        localPlayer.SetSaveData(incoming);
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    ///////////////////////////////////////////////////换装结束/////////////////////////////////////////////////////////
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
     /// <summary>
@@ -216,9 +309,11 @@ public class ClientConnect : MonoBehaviour
                 // 使得本地玩家不被销毁，我们手动销毁
                 DontDestroyOnLoad(Context.localPlayer);
             
-                // 回调：说不定有一些操作
+                // 回调：说不定有一些操作需要额外实现
                 onConnectionSuccess.Invoke(resp.spawnPoint, resp.enterScene);
                 break;
+
+                // TODO: 这里有bug：断开连接后会导致各种诡异问题，需要检查
             case LoginResponse.Status.REJECT_PLAYERFULL:
                 Debug.LogWarning("服务器已满！");
                 Disconnect();
@@ -235,10 +330,9 @@ public class ClientConnect : MonoBehaviour
     /// <summary>
     /// 玩家新进入，服务端传过来的事件响应
     /// </summary>
-    /// <param name="pkt"></param>
-    public void OnNewPlayerEntered(NewPlayerEntered pkt)
+    public void OnNewPlayerEntered(NewPlayerEntered newPly)
     {
-        NetPlayerData p = pkt.newPlayerData;
+        NetPlayerData p = newPly.newPlayerData;
         Debug.Log($"新玩家进入：{p.playerName}");
 
         // 只关心和我同一个场景的人
@@ -250,12 +344,12 @@ public class ClientConnect : MonoBehaviour
     /// <summary>
     /// 有人换了场景。他进的是我当前场景就把他生成出来，否则（原来在我这）把他移除
     /// </summary>
-    public void OnOtherPlayerEnterNewScene(OtherPlayerEnterNewScene pkt)
+    public void OnOtherPlayerEnterNewScene(ServerOtherPlayerEnterNewScene pkt)
     {
         NetPlayerData p = pkt.newPlayerData;
 
         bool inMyScene = p.scene == Context.sc.currentScene;
-        var existing = Context.sc.scenePlayers.Find(x => x.netPlayer.playerId == p.playerId);
+        var existing = Context.sc.scenePlayers.Find(x => x.netPlayer.playerName == p.playerName);
 
         if (inMyScene)
         {
@@ -264,7 +358,7 @@ public class ClientConnect : MonoBehaviour
         }
         else if (existing != null)
         {
-            Context.sc.RemovePlayerById(p.playerId);
+            Context.sc.RemovePlayerByName(p.playerName);
         }
     }
 

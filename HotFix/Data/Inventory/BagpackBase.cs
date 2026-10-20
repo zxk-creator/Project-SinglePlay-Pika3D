@@ -26,6 +26,40 @@ public class BagpackBase : ItemBase
         capacity = Mathf.Clamp(newValue, 1, 1000);
     }
 
+    public override bool IsSameAs(ItemBase item)
+    {
+        // 先让基类比较
+        if (!base.IsSameAs(item)) return false;
+
+        // 强转为 BagpackBase
+        var other = item as BagpackBase;
+        if (other == null) return false;
+
+        // 比较背包特有的状态字段
+        if (capacity != other.capacity) return false;
+
+        // 比较背包里的物品
+        if (items == null && other.items == null) return true;
+        if (items == null || other.items == null) return false;
+
+        // 数量必须一致
+        if (items.Count != other.items.Count) return false;
+
+        // 逐个比较里面的物品
+        for (int i = 0; i < items.Count; i++)
+        {
+            var myItem = items[i];
+            var otherItem = other.items[i];
+
+            if (myItem == null && otherItem == null) continue;
+            if (myItem == null || otherItem == null) return false;
+
+            if (!myItem.IsSameAs(otherItem)) return false;
+        }
+
+        return true;
+    }
+
     public ItemBase TryPutIntoBag(ItemBase newItem)
     {
         if (newItem == null)

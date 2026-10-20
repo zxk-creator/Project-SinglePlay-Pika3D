@@ -9,12 +9,12 @@ namespace PKWeb;
 // 纯数据，两端共用
 public class NetPlayerData : INetSerializable
 {
-    // 玩家名字哈希，唯一标识
-    public long playerId = 0;
-    // 名字
+    // 名字，唯一标识
     public string playerName;
-    // 完整存档数据（装备、背包等）
+    // 存档数据
     public SaveData playerData;
+    // TODO: 是否是主机（依赖他进行判断服务器是否应该终止），尚未实现
+    public bool isHost = false;
 
     // 位置
     public Vector3 position;
@@ -24,8 +24,10 @@ public class NetPlayerData : INetSerializable
     public ESceneType scene = ESceneType.NONE;
 
     // 服务端：该玩家的连接
-    // 客户端：填成"我连服务器的那条连接"
+    // 客户端：填成我连服务器的那条连接
     public NetPeer clientConnect;
+    // 是否死了，死了不能执行一些操作
+    public bool isDead = false;
 
     public NetPlayerData() { }
 
@@ -33,7 +35,6 @@ public class NetPlayerData : INetSerializable
     {
         playerData = data;
         playerName = data.playerName;
-        playerId = Compute(data.playerName);
         clientConnect = peer;
     }
 
@@ -48,7 +49,6 @@ public class NetPlayerData : INetSerializable
 
     public void Serialize(NetDataWriter writer)
     {
-        writer.Put(playerId);
         writer.Put(playerName);
         writer.Put(position.x);
         writer.Put(position.y);
@@ -70,7 +70,6 @@ public class NetPlayerData : INetSerializable
 
     public void Deserialize(NetDataReader reader)
     {
-        playerId = reader.GetLong();
         playerName = reader.GetString();
         position = new Vector3(reader.GetFloat(), reader.GetFloat(), reader.GetFloat());
         rotation = new Quaternion(reader.GetFloat(), reader.GetFloat(), reader.GetFloat(), reader.GetFloat());
@@ -86,19 +85,4 @@ public class NetPlayerData : INetSerializable
     }
 
     public override string ToString() => playerName;
-
-    public static long Compute(string name)
-    {
-        unchecked
-        {
-            ulong hash = 14695981039346656037UL;
-            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(name);
-            for (int i = 0; i < bytes.Length; i++)
-            {
-                hash ^= bytes[i];
-                hash *= 1099511628211UL;
-            }
-            return (long)hash;
-        }
-    }
 }

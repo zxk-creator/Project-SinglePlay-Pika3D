@@ -10,7 +10,8 @@ public static class NPCUtil
         
         bool isGirl = Util.GenBoolByPercent(0.8f);
         var res = ResourceHelp.LoadPrefab("NPC");
-        res.GetComponent<CharacterBase>().isGirl = isGirl;
+        var npc = res.GetComponent<CharacterBase>();
+        npc.SetGender(isGirl);
         res.GetComponent<NPC>().SetName(Context.fanNames.RandomElement());
 
         res.transform.SetPositionAndRotation(position, rotation);

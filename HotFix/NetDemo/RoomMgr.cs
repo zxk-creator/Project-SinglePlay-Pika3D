@@ -16,6 +16,7 @@ namespace PKWeb
             // 初始化各种房间的玩家列表，否则 AddPlayer 取下标会抛 KeyNotFoundException
             roomAndPlayers[ESceneType.CITY] = new List<NetPlayerData>();
             roomAndPlayers[ESceneType.DEFAULT] = new List<NetPlayerData>();
+            roomAndPlayers[ESceneType.TEST] = new List<NetPlayerData>();
             currentWorld = world;
 
             Context.updateProxy.RegisterNewTask(TickTime, int.MaxValue, 1f);
@@ -73,8 +74,8 @@ namespace PKWeb
         }
 
         /// <summary>
-        /// 按连接把玩家从所在房间移除（用于断线清理）。
-        /// 遍历所有房间，因为一个 peer 只会存在于一个房间里，不关心具体是哪个。
+        /// 按连接把玩家从所在房间移除。
+        /// 遍历所有房间，因为一个peer只会存在于一个房间里，不关心具体是哪个。
         /// </summary>
         /// <returns>是否真的移除了一个玩家</returns>
         public bool RemovePlayerByPeer(NetPeer peer)
@@ -110,6 +111,35 @@ namespace PKWeb
                 }
             }
             return null;
+        }
+
+        /// <summary>取指定场景里除exclude之外的所有玩家连接</summary>
+        public List<NetPeer> GetScenePeers(ESceneType scene, NetPeer exclude)
+        {
+            var result = new List<NetPeer>();
+            if (!roomAndPlayers.TryGetValue(scene, out var players)) return result;
+
+            foreach (var p in players)
+            {
+                if (p.clientConnect == exclude) continue;
+                result.Add(p.clientConnect);
+            }
+            return result;
+        }
+
+        /// <summary>取所有房间所有玩家的连接</summary>
+        public List<NetPeer> GetAllPlayerNetPeers()
+        {
+            var result = new List<NetPeer>();
+            foreach (var kv in roomAndPlayers)
+            {
+                foreach (var p in kv.Value)
+                {
+                    if (p.clientConnect == null) continue;
+                    result.Add(p.clientConnect);
+                }
+            }
+            return result;
         }
     }
 }

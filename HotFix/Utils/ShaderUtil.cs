@@ -142,6 +142,18 @@ public static class ShaderUtil
         // 覆盖 shader 默认值（0.7 / 1.5），让淡出更晚发生、过渡更柔和。
         newMat.SetFloat("_FadeMinDistance", 0.7f);
         newMat.SetFloat("_FadeMaxDistance", 1.2f);
+        // TransClipping：用 _MainTex 的 alpha 作裁剪遮罩，alpha < 0.5 的像素直接丢弃
+        newMat.EnableKeyword("_IS_CLIPPING_TRANSMODE");
+        newMat.DisableKeyword("_IS_CLIPPING_OFF");
+        newMat.DisableKeyword("_IS_CLIPPING_MODE");
+        newMat.SetFloat("_ClippingMode", 2f);
+        newMat.SetFloat("_IsBaseMapAlphaAsClippingMask", 1f);
+        newMat.SetFloat("_Inverse_Clipping", 0f);
+        newMat.SetFloat("_Clipping_Level", 0f);
+        newMat.SetFloat("_Tweak_transparency", 0f);
+        newMat.SetFloat("_TransparentEnabled", 1f);
+        newMat.EnableKeyword("_IS_OUTLINE_CLIPPING_YES");
+        newMat.DisableKeyword("_IS_OUTLINE_CLIPPING_NO");
         // 其余参数全部保持 UTS 默认：无高光（_HighColor=黑）、无 Rim（_RimLight=0）、
         // 无 MatCap（_MatCap=0）→ 无金属感、无反光。
 

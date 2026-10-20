@@ -103,6 +103,19 @@ public class ClothBase : ItemBase
         return copy;
     }
 
+    public override bool IsSameAs(ItemBase item)
+    {
+        if (!base.IsSameAs(item)) return false;
+
+        var other = item as ClothBase;
+        if (other == null) return false;
+
+        return OdorLevel == other.OdorLevel
+            && Durability == other.Durability
+            && addedCharm == other.addedCharm
+            && clothType == other.clothType;
+    }
+
     public override void Serialize(NetDataWriter bw)
     {
         base.Serialize(bw);

@@ -1,10 +1,7 @@
-using System.Collections;
-using System.Collections.Generic;
-using UnityEngine;
-
 public enum EAnimationState
 {
     IDLE,         // 站立
+    IDLE_EXTENSION, //待机
     MOVE,         // 行走
     RUN,          // 跑步
     FLY_IDLE,     // 上升阶段
@@ -12,6 +9,7 @@ public enum EAnimationState
     SIT,          // 坐
     LIE,          // 躺
     BATH,         // 泡澡
+    SHOWER,       // 站着淋浴
     REVIVE,       // 复活中
     DEAD
 }

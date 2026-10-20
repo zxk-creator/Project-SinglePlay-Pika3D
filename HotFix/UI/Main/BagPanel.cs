@@ -1,7 +1,5 @@
 using UnityEngine;
 using UnityEngine.UI;
-using UnityEngine.AddressableAssets;
-using UnityEngine.ResourceManagement.AsyncOperations;
 using PK;
 
 // 背包界面
@@ -31,35 +29,32 @@ public class BagPanel : UIBase,IInputAcceptable
 
     public void Init(bool bisFirstBuild)
     {
+        if (UIPrefab == null)
+        {
+            Log.Error("背包面板 prefab 未创建，Init 中止");
+            return;
+        }
+
         if (!bisFirstBuild)
         {
-            // 重建面板：prefab 已在 Addressables，不能再用 Resources.Load
-            Object.Destroy(UIPrefab);
+            ClearChildren(HandSpace);
+            ClearChildren(BagSpace);
+            ClearChildren(bagEquipTransform);
 
-            var handle = Addressables.LoadAssetAsync<GameObject>(R.Path.BagPanelPath);
-            handle.WaitForCompletion();
-
-            if (handle.Status != AsyncOperationStatus.Succeeded || handle.Result == null)
-            {
-                Log.Error($"重建背包面板失败，地址：{R.Path.BagPanelPath}，原因：{handle.OperationException?.Message}");
-                return;
-            }
-
-            // 换掉基础类里那份旧句柄，避免累积泄漏（Destroy 里会释放）
-            if (UIPrefabH.IsValid())
-            {
-                Addressables.Release(UIPrefabH);
-            }
-            UIPrefabH = handle;
-
-            UIPrefab = Object.Instantiate(UIPrefabH.Result);
-            UIPrefab.transform.SetParent(canvas.transform, false);
-            UIPrefab.SetActive(true);
+            if (UIPrefab != null)
+                ClearChildren(FindChildRecursive(UIPrefab.transform, "ClothLayoutGroup"));
         }
+
+        BuildContent();
+    }
+
+    private void BuildContent()
+    {
         // 回填面板引用
         playerInventory.SetBagPanel(this);
 
         exitButton = GetTargetComponent<GameCancelButton>("ReturnButton");
+        exitButton.onClick.RemoveListener(ExitBagPanel);
         exitButton.onClick.AddListener(ExitBagPanel);
         HandSpace = FindChildRecursive(UIPrefab.transform, "GridLayoutGroupHand");
         if (HandSpace == null) Log.Error("未找到GridLayoutGroupHand!");
@@ -122,6 +117,18 @@ public class BagPanel : UIBase,IInputAcceptable
         (stockItem = new InventoryItem(equips.Stock, this, EOperateLocation.EquipArea)).UIPrefab.transform.SetParent(parent, false);
         (shoesItem = new InventoryItem(equips.Shoes, this, EOperateLocation.EquipArea)).UIPrefab.transform.SetParent(parent, false);
         (toolItem = new InventoryItem(playerInventory.currentEquipedTool, this, EOperateLocation.EquipArea)).UIPrefab.transform.SetParent(parent, false);
+    }
+
+    private static void ClearChildren(Transform parent)
+    {
+        if (parent == null) return;
+
+        for (int i = parent.childCount - 1; i >= 0; i--)
+        {
+            Transform child = parent.GetChild(i);
+            child.SetParent(null, false);
+            Object.Destroy(child.gameObject);
+        }
     }
 
     public void RefreshEquip()

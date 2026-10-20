@@ -1,5 +1,6 @@
 using System.IO;
 using LiteNetLib.Utils;
+using PK;
 
 public enum EItemLevel
 {
@@ -68,6 +69,22 @@ public class ItemBase : INetSerializable
         };
 
         return copy;
+    }
+
+    /// <summary>
+    /// 比较两个物品的所有状态字段判断是否真的一样
+    /// </summary>
+    /// <returns>一样则返回true，不一样返回false</returns>
+    public virtual bool IsSameAs(ItemBase item)
+    {
+        if (item == null)
+        {
+            Log.NullPtr("ItemBase IsSameAs");
+            return false;
+        }
+
+        // item一样的最多只有id，其他的都不是状态字段，所以只比较id即可
+        return item.id == id ? true : false;
     }
 
     public virtual void Serialize(NetDataWriter bw)

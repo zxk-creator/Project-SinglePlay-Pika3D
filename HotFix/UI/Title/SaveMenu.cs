@@ -325,16 +325,15 @@ public class SaveMenu : UIBase
 
     private static int CountItems(SaveData data)
     {
-        int total = data.bagpackItems?.Count ?? 0;
-        total += data.handItems?.Count ?? 0;
-        if (data.equipedBag != null) total++;
+        int total = data.handSpace?.items.Count ?? 0;
+        if (data.equipedBag != null) total += data.equipedBag.items.Count + 1;
         if (data.currentEquipedTool != null) total++;
         return total;
     }
 
     private static string FileTimeOf(int slotIndex)
     {
-        string full = PKSv.Path.GetSavePath(SvMgr.svFileNames[slotIndex]);
+        string full = Path.GetSavePath(SvMgr.svFileNames[slotIndex]);
 
         if (!System.IO.File.Exists(full)) return "—";
 
@@ -347,7 +346,7 @@ public class SaveMenu : UIBase
         new SelectGameModePanel(saveData).Show();
     }
 
-    // 点了某个存档槽的「删除」之后干什么
+    // 点了某个存档槽的删除之后干什么
     private void OnDeleteSlotClicked(int slotIndex, SaveData saveData)
     {
         new MessageBoxOKCancel().ShowOkCancel(() =>

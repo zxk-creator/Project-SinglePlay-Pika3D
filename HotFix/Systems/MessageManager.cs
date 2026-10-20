@@ -14,6 +14,12 @@ public class MessageManager
         if (parts.Length < 1) return;
 
         string cmd = parts[0].ToLower();
+
+        // 发送命令
+        var cc = new Commands();
+        cc.command = command;
+        Context.net.Send(cc);
+
         if (cmd == "/enter")
         {
             if (parts.Length < 2)
@@ -22,15 +28,6 @@ public class MessageManager
                 return;
             }
             EnterScene(parts[1]);
-        }
-        else if (cmd == "/give")
-        {
-            if (parts.Length < 2)
-            {
-                Log.Error("命令缺少参数：/give <ItemId>");
-                return;
-            }
-            GiveItem(parts[1]);
         }
         else if (cmd == "/summonnpc")
         {
@@ -80,10 +77,6 @@ public class MessageManager
 
             Util.SummonFuriture(furniture, targetPosition, rotation);
         }
-        else if (cmd == "/kill")
-        {
-            Context.localPlayer.Dead();
-        }
         else if (cmd == "/showcomputer")
         {
             new ComputerPanel().Show();
@@ -96,10 +89,6 @@ public class MessageManager
         else if (cmd == "/god")
         {
             Context.localPlayer.property.SetStaminaConsumeDisabled(true);
-        }
-        else
-        {
-            Log.Error("未知命令：" + parts[0]);
         }
     }
 
@@ -132,15 +121,16 @@ public class MessageManager
 
         ItemBase item = template.GetACopy();
 
-        ItemBase remain = Context.localPlayer.inventory.TryPutIntoBag(item);
-        if (remain != null)
-        {
-            Log.Warn("背包空间不足，" + item.itemName + "未能完全放入");
-        }
-        else
-        {
-            Log.Info("已给予物品：" + item.itemName + "（ID:" + id + "）");
-        }
+        // TODO: 需要更新API
+        // ItemBase remain = Context.localPlayer.inventory.TryPutIntoBag(item);
+        // if (remain != null)
+        // {
+        //     Log.Warn("背包空间不足，" + item.itemName + "未能完全放入");
+        // }
+        // else
+        // {
+        //     Log.Info("已给予物品：" + item.itemName + "（ID:" + id + "）");
+        // }
     }
 
     private bool TryFindItem(int id, out ItemBase item)

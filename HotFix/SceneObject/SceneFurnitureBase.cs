@@ -102,10 +102,8 @@ public class SceneFurnitureBase : SceneObjectBase, IControlable, IInputAcceptabl
         interactingChars[targetKey] = null;
         who.transform.SetParent(null, true);
         who.movementRb.isKinematic = false;
-        // 起身：常规Idle带层前缀，同步播5层恢复
-        who.characterAnimation.PlayLocomotionAllLayers("Idle");
-        who.characterAnimation.isDoingAction = false;
-        who.characterAnimation.actionStateName = "";
+        // 起身：交回站立。动画由外部注入驱动，必须显式推 IDLE（常规 Idle 带层前缀，同步播 5 层）
+        who.characterAnimation.SetAnimationState(EAnimationState.IDLE);
         // 动作状态也要清掉，否则 moveState 停在 SIT/LIE/BATH，动画上报会一直报坐着
         who.moveState = EAnimationState.IDLE;
 
@@ -165,7 +163,6 @@ public class SceneFurnitureBase : SceneObjectBase, IControlable, IInputAcceptabl
         }
         // 更新字典，使其换成正确引用
         interactingChars[targetSeat] = interactChar;
-        interactChar.characterAnimation.isDoingAction = true;
         
         MakeCharSeat(interactChar,targetSeat,furniture.interactType);
     }
@@ -202,34 +199,30 @@ public class SceneFurnitureBase : SceneObjectBase, IControlable, IInputAcceptabl
             case EInteractableType.Sittable:
             {
                 // Sit：Base 原名 Sit，衣服层带前缀 HairSit/CoatSit/SkirtSit/WingSit
-                target.characterAnimation.actionStateName = "Sit";
+                target.characterAnimation.SetAnimationState(EAnimationState.SIT);
                 target.moveState = EAnimationState.SIT;
-                target.characterAnimation.PlayLocomotionAllLayers("Sit");
                 break;
             }
             case EInteractableType.Bed:
                 {
-                    // Lie：状态名是 "Lie"（挂的动画资产叫 LieLeft），且只有主体层有该状态 → 只播层0
-                    target.characterAnimation.actionStateName = "Lie";
+                    // Lie：状态名是 "Lie"（挂的动画资产叫 LieLeft），且只有主体层有该状态
+                    target.characterAnimation.SetAnimationState(EAnimationState.LIE);
                     target.moveState = EAnimationState.LIE;
-                    target.characterAnimation.PlayAnimationLayer("Lie", 0);
                     break;
                 }
             case EInteractableType.Shower:
                 {
                     target.ApplyBathSuit();
-                    // 洗澡用的是普通站立
-                    target.characterAnimation.actionStateName = "Idle";
-                    target.moveState = EAnimationState.IDLE;
-                    target.characterAnimation.PlayAnimationLayer("Idle", 0);
+                    // 洗澡用的是普通站立动画，但语义上算"被动作占用"，所以用 SHOWER 而不是 IDLE
+                    target.characterAnimation.SetAnimationState(EAnimationState.SHOWER);
+                    target.moveState = EAnimationState.SHOWER;
                     break;
                 }
                 case EInteractableType.Tub:
                 {
                     target.ApplyBathSuit();
-                    target.characterAnimation.actionStateName = "Bath";
+                    target.characterAnimation.SetAnimationState(EAnimationState.BATH);
                     target.moveState = EAnimationState.BATH;
-                    target.characterAnimation.PlayAnimationLayer("Bath", 0);
                     break;
                 }
         }

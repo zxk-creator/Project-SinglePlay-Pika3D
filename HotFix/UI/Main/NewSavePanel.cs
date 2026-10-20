@@ -67,6 +67,8 @@ public class NewSavePanel : UIBase
     private VisualElement closetThumb;
     private VisualElement closetTrack;
     private float closetOffset;
+    private float closetDragStart;
+    private float closetDragRatio;
 
     private UTKAcceptButton btnGirl;
     private UTKAcceptButton btnBoy;
@@ -97,6 +99,8 @@ public class NewSavePanel : UIBase
     private float rotation;        // 已施加的角度，0-360
     private float initYaw;         // 角色默认朝向的 Y 角，作为 0 度基准
     private bool hasInitYaw;
+    private float rotateDragStart;
+    private float rotateDragRatio;
     private SaveMenu saveMenu;
 
     public NewSavePanel(SaveMenu saveMenu) : base("AvatarSelector", isUTK: true)
@@ -147,12 +151,12 @@ public class NewSavePanel : UIBase
         rotateThumb = root.Q<VisualElement>("rotate-thumb");
 
         rotateTrack.AddManipulator(new ThumbDragManipulator(
-            useXAxis: true, PointerKind.Any, OnRotateDragged));
+            useXAxis: true, PointerKind.Any, OnRotateDragged, 0f, BeginRotateDrag));
 
         rotateTrack.RegisterCallback<GeometryChangedEvent>(_ => RefreshRotateThumb());
     }
 
-    private void OnRotateDragged(float dragPixels)
+    private void BeginRotateDrag()
     {
         // 第一次拖动时才记基准朝向，避免构造函数阶段读到还没建好的骨架旋转
         if (!hasInitYaw)
@@ -161,7 +165,13 @@ public class NewSavePanel : UIBase
             initYaw = preview.transform.eulerAngles.y;
         }
 
-        SetRotation(rotation + dragPixels * (360f / RotateTravel()));
+        rotateDragStart = rotation;
+        rotateDragRatio = 360f / RotateTravel();
+    }
+
+    private void OnRotateDragged(float totalPixels)
+    {
+        SetRotation(rotateDragStart + totalPixels * rotateDragRatio);
     }
 
     private float RotateTravel()
@@ -356,6 +366,9 @@ public class NewSavePanel : UIBase
 
         private float offset;
 
+        private float dragStartOffset;
+        private float dragRatio;
+
         public StripView(VisualElement parentClip, VisualElement contentRow,
                          VisualElement scrollTrack, VisualElement scrollThumb)
         {
@@ -366,11 +379,11 @@ public class NewSavePanel : UIBase
 
             // 拖滑块：鼠标和触摸都行，读 X 位移
             thumb.AddManipulator(
-                new ThumbDragManipulator(useXAxis: true, PointerKind.Any, OnDragged));
+                new ThumbDragManipulator(useXAxis: true, PointerKind.Any, OnDragged, 0f, BeginThumbDrag));
 
             // 直接拖内容区：只认触摸（手指），鼠标不给拖，避免误拖又和点击抢事件
             clip.AddManipulator(
-                new ThumbDragManipulator(useXAxis: true, PointerKind.Touch, OnDraggedContent, DragThreshold));
+                new ThumbDragManipulator(useXAxis: true, PointerKind.Touch, OnDraggedContent, DragThreshold, BeginContentDrag));
 
             // 内容尺寸确定后刷新滑块长度
             row.RegisterCallback<GeometryChangedEvent>(_ => Refresh());
@@ -378,21 +391,43 @@ public class NewSavePanel : UIBase
 
         private float MaxOffset => Mathf.Max(0f, row.layout.width - clip.layout.width);
 
-        private void OnDragged(float dragPixels)
+        private float Travel()
         {
-            float travel = Mathf.Max(1f, track.layout.width - thumb.layout.width);
-            ScrollTo(offset + dragPixels * MaxOffset / travel);
+            float trackW = track.layout.width;
+            float clipW = clip.layout.width;
+            float rowW = row.layout.width;
+
+            if (trackW <= 0f || rowW <= 0f) return 1f;
+
+            float thumbW = Mathf.Max(MinThumbHeight, trackW * (clipW / rowW));
+            return Mathf.Max(1f, trackW - thumbW);
+        }
+
+        private void BeginThumbDrag()
+        {
+            dragStartOffset = offset;
+            dragRatio = MaxOffset / Travel();
+        }
+
+        private void BeginContentDrag()
+        {
+            dragStartOffset = offset;
+        }
+
+        private void OnDragged(float totalPixels)
+        {
+            ScrollTo(dragStartOffset + totalPixels * dragRatio);
         }
 
         // 手指拖内容：1:1 跟手，天然是"内容跟着手指走"的手感
-        private void OnDraggedContent(float dragPixels)
+        private void OnDraggedContent(float totalPixels)
         {
-            ScrollTo(offset - dragPixels);
+            ScrollTo(dragStartOffset - totalPixels);
         }
 
-        private void ScrollTo(float offset)
+        private void ScrollTo(float value)
         {
-            offset = Mathf.Clamp(offset, 0f, MaxOffset);
+            offset = Mathf.Clamp(value, 0f, MaxOffset);
             row.style.translate = new Translate(-offset, 0f);
             Refresh();
         }
@@ -403,7 +438,16 @@ public class NewSavePanel : UIBase
             float rowW = row.layout.width;
             float trackW = track.layout.width;
 
-            if (rowW <= clipW || rowW <= 0f || trackW <= 0f)
+            // 布局尚未算定（宽为 0）：只藏滑块，不动位移，避免拖拽途中被瞬时值拽回起点
+            if (rowW <= 0f || trackW <= 0f)
+            {
+                thumb.style.display = DisplayStyle.None;
+                return;
+            }
+
+            float max = rowW - clipW;
+
+            if (max <= 0f)
             {
                 thumb.style.display = DisplayStyle.None;
                 offset = 0f;
@@ -413,9 +457,11 @@ public class NewSavePanel : UIBase
 
             thumb.style.display = DisplayStyle.Flex;
 
+            offset = Mathf.Clamp(offset, 0f, max);
+
             float thumbW = Mathf.Max(MinThumbHeight, trackW * (clipW / rowW));
             thumb.style.width = thumbW;
-            thumb.style.left = Mathf.Lerp(0f, trackW - thumbW, offset / (rowW - clipW));
+            thumb.style.left = Mathf.Lerp(0f, trackW - thumbW, offset / max);
         }
     }
 
@@ -432,16 +478,22 @@ public class NewSavePanel : UIBase
         });
 
         // 纵向滚动条：鼠标和触摸都能拖，读 Y 位移
-        thumb.AddManipulator(new ThumbDragManipulator(useXAxis: false, PointerKind.Any, dragPixels =>
-        {
-            float trackH = track.layout.height;
-            float thumbH = thumb.layout.height;
-            float travel = Mathf.Max(1f, trackH - thumbH);
+        thumb.AddManipulator(new ThumbDragManipulator(useXAxis: false, PointerKind.Any,
+            total =>
+            {
+                SetClosetOffset(closetDragStart + total * closetDragRatio);
+            },
+            0f,
+            () =>
+            {
+                float trackH = track.layout.height;
+                float thumbH = thumb.layout.height;
+                float travel = Mathf.Max(1f, trackH - thumbH);
 
-            // 滑块走的像素 -> 内容应滚动的像素
-            float ratio = MaxClosetOffset() / travel;
-            ScrollCloset(dragPixels * ratio);
-        }));
+                // 滑块走的像素 -> 内容应滚动的像素，按下时算一次
+                closetDragStart = closetOffset;
+                closetDragRatio = MaxClosetOffset() / travel;
+            }));
 
         content.RegisterCallback<GeometryChangedEvent>(_ => UpdateClosetScrollbar());
 
@@ -453,7 +505,12 @@ public class NewSavePanel : UIBase
 
     private void ScrollCloset(float delta)
     {
-        closetOffset = Mathf.Clamp(closetOffset + delta, 0f, MaxClosetOffset());
+        SetClosetOffset(closetOffset + delta);
+    }
+
+    private void SetClosetOffset(float value)
+    {
+        closetOffset = Mathf.Clamp(value, 0f, MaxClosetOffset());
         ApplyClosetScroll();
     }
 
@@ -475,7 +532,16 @@ public class NewSavePanel : UIBase
         float content = closetContent.layout.height;
         float trackH = closetTrack.layout.height;
 
-        if (content <= view || content <= 0f || trackH <= 0f)
+        // 布局尚未算定：只藏滑块，不动位移
+        if (content <= 0f || trackH <= 0f)
+        {
+            closetThumb.style.display = DisplayStyle.None;
+            return;
+        }
+
+        float max = content - view;
+
+        if (max <= 0f)
         {
             closetThumb.style.display = DisplayStyle.None;
             closetOffset = 0f;
@@ -485,9 +551,11 @@ public class NewSavePanel : UIBase
 
         closetThumb.style.display = DisplayStyle.Flex;
 
+        closetOffset = Mathf.Clamp(closetOffset, 0f, max);
+
         float thumbH = Mathf.Max(MinThumbHeight, trackH * (view / content));
         closetThumb.style.height = thumbH;
-        closetThumb.style.top = Mathf.Lerp(0f, trackH - thumbH, closetOffset / (content - view));
+        closetThumb.style.top = Mathf.Lerp(0f, trackH - thumbH, closetOffset / max);
     }
 
     /// <summary>
@@ -504,19 +572,21 @@ public class NewSavePanel : UIBase
         private readonly bool horizontal;
         private readonly PointerKind kind;
         private readonly System.Action<float> move;
+        private readonly System.Action begin;
         private readonly float threshold;
 
         private bool pressed;
         private bool dragging;
-        private float lastPos;
-        private float accumulated;
+        private float startPos;
 
         public ThumbDragManipulator(bool useXAxis, PointerKind acceptedKind,
-                                    System.Action<float> onMove, float dragThreshold = 0f)
+                                    System.Action<float> onMove, float dragThreshold = 0f,
+                                    System.Action onBeginDrag = null)
         {
             horizontal = useXAxis;
             kind = acceptedKind;
             move = onMove;
+            begin = onBeginDrag;
             threshold = dragThreshold;
         }
 
@@ -548,11 +618,15 @@ public class NewSavePanel : UIBase
             if (evt.pointerType != UiePointerType.touch && evt.button != 0) return;
 
             pressed = true;
-            dragging = threshold <= 0f;
-            accumulated = 0f;
-            lastPos = horizontal ? evt.position.x : evt.position.y;
+            dragging = false;
+            startPos = horizontal ? evt.position.x : evt.position.y;
 
-            if (dragging) target.CapturePointer(evt.pointerId);
+            if (threshold <= 0f)
+            {
+                dragging = true;
+                target.CapturePointer(evt.pointerId);
+                begin?.Invoke();
+            }
         }
 
         private void OnMove(PointerMoveEvent evt)
@@ -560,20 +634,17 @@ public class NewSavePanel : UIBase
             if (!pressed) return;
 
             float pos = horizontal ? evt.position.x : evt.position.y;
-            float delta = pos - lastPos;
-            lastPos = pos;
 
             if (!dragging)
             {
-                accumulated += delta;
-
-                if (Mathf.Abs(accumulated) < threshold) return;
+                if (Mathf.Abs(pos - startPos) < threshold) return;
 
                 dragging = true;
                 target.CapturePointer(evt.pointerId);
+                begin?.Invoke();
             }
 
-            move(delta);
+            move(pos - startPos);
             evt.StopPropagation();
         }
 
@@ -772,10 +843,8 @@ public class NewSavePanel : UIBase
         // 为什么一堆null，因为玩家出生的时候什么都没有只有衣服
         var saveData = new PKSv.SaveData
         {
-            bagpackItems = null,
             currentEquipedTool = null,
             equipedBag = null,
-            handItems = null,
             playerName = playerName,
             worldName = worldName,
             isGirl = isGirl

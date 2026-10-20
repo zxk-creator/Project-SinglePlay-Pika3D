@@ -18,24 +18,16 @@ using PK;
 ///   6. 若开启 bakeToToon：把材质经 ShaderUtil 烘焙成 UTS（Unity Toon Shader）卡通材质
 ///      （颜色遮罩烤进 _MainTex，替换原材质）
 ///
-/// 使用方式
-/// 把本脚本挂到角色 GameObject 上，在 Inspector 拖入 bonesRoot（男女共用同一骨架）。
+/// 把本脚本挂到角色 GameObject 上，在Inspector拖入bonesRoot，注意男女共用同一骨架。
 /// 性别和 NPC 标记由外部所有者直接注入；本类不再查找 CharacterBase。
-/// 本类仅负责装备的渲染显示，初始装备、穿戴/脱下决策全部由 InventorySystem
-/// 控制，本类不自行做任何初始化。单独调用显示接口：
-/// 运行时换装：
-///     equip.Wear(cloth);          // 穿上一件布料（clothType 决定部位）
-///     equip.Remove(EClothType.UPPER);   // 恢复该部位默认着装
-///
-/// 本系统强制要求每个部位始终有衣服：任何部位不允许为空，也不提供
-/// 清空/销毁接口。Wear 传空路径或 null、Remove 脱衣，都会自动恢复默认着装。
-/// 注意：本类负责的是渲染相关逻辑，不负责存储，存储在InventorySystem中
+/// 本类仅负责装备的3D外观渲染显示，除此之外没有别的3D渲染方式。
 /// </summary>
 public class Equip : MonoBehaviour
 {
+    ////////////////////////////////////////基本身份与默认着装////////////////////////////////////////
+
     [Tooltip("骨架根（男女共用同一骨架，记得赋值的是Hierarchy里面的）")]
     public Transform bonesRoot;
-
 
     [Tooltip("由 LocalPlayer / NPC 在初始化时直接赋值。Equip 不自动查找 CharacterBase。")]
     public bool isGirl = true;
@@ -58,67 +50,65 @@ public class Equip : MonoBehaviour
     public GameObject maleDefaultHand;
     public GameObject maleDefaultStocking;
 
-    [Header("男性女性头上的浴巾")]
-    public GameObject maleHeadTowel;
-    public GameObject femaleHeadTowel;
-
     [Header("每件装备的染色（_ClothColor / _ClothColor1，默认白色=不改色）")]
     public SlotColors hairColors = new SlotColors { clothColor = Color.white, clothColor1 = Color.white };
 
-    [Header("换装后烘焙为 Toon 卡通材质（走 ShaderUtil 烘焙）")]
+    [Header("是否烘焙为卡通材质")]
     [Tooltip("关闭则保持 Apowo 换色材质原样")]
     public bool bakeToToon = true;
 
-    [Header("网格合体（复刻原版 CombineMesh.SkinnedMeshCombiner）")]
-    [Tooltip("把已穿戴的部位合并成一个 SkinnedMeshRenderer：只合并网格与骨骼，每个部件保留自己的材质（不做贴图图集）。解决模块之间接缝、动画裂缝、光照不一致的问题")]
-    public bool combineMeshes = true;
-
-    /// <summary>各部位要搬到角色骨骼上的挂点根名字</summary>
-    private static readonly Dictionary<EClothType, string> SlotMountBone = new Dictionary<EClothType, string>
-    {
-        { EClothType.HAIR,     "HairRoot" },
-        { EClothType.BOTTOM,   "Woman_SkirtRoot" },
-        { EClothType.GLASSES,  "GlassesRoot" },
-        { EClothType.EARRING,  "EarringRoot" },
-        { EClothType.FACE,     "FaceRoot" },
-        { EClothType.SHOE,     "ShoestRoot" },
-        { EClothType.STOCKING, "StockingRoot" },
-        { EClothType.HAND,     "HandRoot" },
-        { EClothType.UPPER,    "Woman_CoatRoot" },
-    };
-
-    /// <summary>各部位挂点对应的角色真实骨骼名（原版 AvatarExtension.BoneRoot 的值）</summary>
-    private static readonly Dictionary<EClothType, string> SlotMountTarget = new Dictionary<EClothType, string>
-    {
-        { EClothType.HAIR,     "Bip001 Head" },
-        { EClothType.BOTTOM,   "Bip001" },
-        { EClothType.GLASSES,  "Bip001 Head" },
-        { EClothType.EARRING,  "Bip001 Head" },
-        { EClothType.FACE,     "Bip001 Head" },
-        { EClothType.SHOE,     "Bip001 R Calf 1" },
-        { EClothType.STOCKING, "Bip001 R Calf 1" },
-        { EClothType.HAND,     "Bip001 R Hand" },
-        { EClothType.UPPER,    "Bip001" },
-    };
-
-    /// <summary>按名字取角色骨架上的骨骼（含未激活）</summary>
-    private Transform FindBoneByName(string boneName)
-    {
-        if (string.IsNullOrEmpty(boneName)) return null;
-        if (boneMap != null && boneMap.TryGetValue(boneName, out Transform cached)) return cached;
-
-        Transform root = GetBonesRoot();
-        if (root == null) root = transform;
-        return FindChildRecursive(root, boneName);
-    }
+    ////////////////////////////////////////换装通知////////////////////////////////////////
 
     /// <summary>换装完成通知（CharacterAnimation 用它重建衣服动画覆盖，帧末统一触发）</summary>
     public event System.Action OnEquipChanged;
 
+    /// <summary>换装后置位，LateUpdate 统一通知，避免同帧多次换装重复通知</summary>
+    private bool animNotifyDirty;
+
+    ////////////////////////////////////////生命周期////////////////////////////////////////
+
+    /// <summary>
+    /// 使用者必须调用这个来初始化换装系统
+    /// </summary>
+    public void Initialize()
+    {
+        if (bonesRoot == null)
+        {
+            throw new UnityException("[Equip] bonesRoot 未赋值，请在 Inspector 里拖上骨架根");
+        }
+
+        NormalizeSkeleton();
+
+        equipRoot = new GameObject("_EquipRoot").transform;
+        equipRoot.SetParent(transform, false);
+
+        SetLayerRecursively(transform, 6);
+        Context.boneRef = bonesRoot.gameObject;
+    }
+
+    /// <summary>
+    /// 换装与骨骼销毁必须落在同一帧，否则Destroy在帧末落地，后续逻辑会把已销毁的骨骼当为null。
+    /// </summary>
+    protected virtual void LateUpdate()
+    {
+        if (animNotifyDirty)
+        {
+            animNotifyDirty = false;
+            OnEquipChanged?.Invoke();
+        }
+        if (meshDirty)
+        {
+            meshDirty = false;
+            // 换装/重新烘焙会重建材质，表情材质缓存必须失效，否则眨眼会写到已经没人用的那份材质上
+            eyeMaterial = null;
+            WeldBottomStocking(0.01f);
+        }
+    }
+
+    ////////////////////////////////////////性别与默认着装////////////////////////////////////////
+
     /// <summary>
     /// 设定性别并按该性别恢复默认着装。
-    /// 即使性别没变也必须重穿一次：调用方（ChangeAvatarCharacter / LocalPlayer / NetPlayer）
-    /// 在 Start 里就是靠这一句把默认装穿上，提前 return 会让角色一件衣服都没有。
     /// </summary>
     public void SetGender(bool newIsGirl)
     {
@@ -127,26 +117,87 @@ public class Equip : MonoBehaviour
         ApplyDefaultOutfit();
     }
 
+    /// <summary>应用默认着装</summary>
+    public void ApplyDefaultOutfit()
+    {
+        wornCloth.Clear();
+
+        foreach (EClothType slot in System.Enum.GetValues(typeof(EClothType)))
+            ClearSlot(slot);
+
+        WearDefault(EClothType.UPPER);
+        WearDefault(EClothType.BOTTOM);
+        WearDefault(EClothType.FACE);
+        WearDefault(EClothType.HAIR);
+        WearDefault(EClothType.HAND);
+        WearDefault(EClothType.STOCKING);
+        ReapplyConflicts();
+        SetLayerRecursively(transform, 6);
+        animNotifyDirty = true;
+    }
+
+    /// <summary>穿上某部位的默认着装。</summary>
+    private void WearDefault(EClothType slot)
+    {
+        GameObject prefab;
+        switch (slot)
+        {
+            case EClothType.UPPER: prefab = isGirl ? femaleDefaultUpper : maleDefaultUpper; break;
+            case EClothType.BOTTOM: prefab = isGirl ? femaleDefaultBottom : maleDefaultBottom; break;
+            case EClothType.FACE: prefab = isGirl ? femaleDefaultFace : maleDefaultFace; break;
+            case EClothType.HAIR: prefab = isGirl ? femaleDefaultHair : maleDefaultHair; break;
+            case EClothType.HAND: prefab = isGirl ? femaleDefaultHand : maleDefaultHand; break;
+            case EClothType.STOCKING: prefab = isGirl ? femaleDefaultStocking : maleDefaultStocking; break;
+            default: prefab = null; break; // GLASSES / EARRING / SHOE 等无默认装
+        }
+
+        if (prefab == null) return;
+        ApplySlot(slot, prefab, GetSlotColors(slot));
+    }
+
+    /// <summary>按部位取对应的染色配置</summary>
+    private SlotColors GetSlotColors(EClothType slot)
+    {
+        switch (slot)
+        {
+            case EClothType.HAIR: return hairColors;
+            default: return new SlotColors();
+        }
+    }
+
+    ////////////////////////////////////////穿脱接口////////////////////////////////////////
+
     /// <summary>
     /// 穿上衣服。由 clothType 决定部位、prefabPath 决定模型。
     /// 若布料带 conflictPart，则对应部位的布料不渲染。
+    /// 内部会自动做一次比较，如果属性都一样则不会穿上直接返回
     /// </summary>
     public void Wear(ClothBase newCloth)
     {
         if (newCloth == null)
         {
-            Log.NullPtr("Wear");
             return;
         }
+
+        // 进行真比较，比较属性。如果属性一样就不换，直接return;
 
         EClothType slot = newCloth.clothType;
         if (slot == EClothType.NONE)
         {
+            Log.Info("指定衣服插槽为空，不会穿上衣服");
             return;
         }
 
         if (string.IsNullOrEmpty(newCloth.prefabPath))
         {
+            Log.Info("prefabPath为空，不会穿上衣服");
+            return;
+        }
+
+        // 比较是否一样，如果一样则不换
+        if (wornCloth.TryGetValue(slot, out ClothBase worn) && worn != null && newCloth.IsSameAs(worn))
+        {
+            wornCloth[slot] = newCloth;
             return;
         }
 
@@ -178,9 +229,7 @@ public class Equip : MonoBehaviour
     }
 
     /// <summary>
-    /// 用一整套装备记录替换当前着装（读档 / 切换角色时用）。
-    /// 先恢复默认着装清掉现有记录与显示，再依次穿上 newEquips 里非空的部位；
-    /// 记录里为 null 的部位保持默认，不会残留上一次的装备。
+    /// 用一整套装备记录替换当前着装，用于读档或切换角色。为null的部位保持默认
     /// </summary>
     public void ApplyEquipped(CharacterEquipCollection newEquips)
     {
@@ -190,291 +239,63 @@ public class Equip : MonoBehaviour
             return;
         }
 
-        ApplyDefaultOutfit();
-
-        Wear(newEquips.Hair);
-        Wear(newEquips.Upper);
-        Wear(newEquips.Bottom);
-        Wear(newEquips.Stock);
-        Wear(newEquips.Shoes);
-        Wear(newEquips.Hands);
-        Wear(newEquips.Earring);
-        Wear(newEquips.Face);
-        Wear(newEquips.Glasses);
-
-        ReapplyConflicts();
-        animNotifyDirty = true;
-    }
-
-    /// <summary>清除缓存的角色骨骼表。重建骨架或切换性别后必须调用。</summary>
-    public void ClearBoneCache()
-    {
-        boneMap = null;
-    }
-
-    /// <summary>应用默认着装</summary>
-    public void ApplyDefaultOutfit()
-    {
-        wornCloth.Clear();
-        WearDefault(EClothType.UPPER);
-        WearDefault(EClothType.BOTTOM);
-        WearDefault(EClothType.FACE);
-        WearDefault(EClothType.HAIR);
-        WearDefault(EClothType.HAND);
-        WearDefault(EClothType.STOCKING);
-        ReapplyConflicts();
-        SetLayerRecursively(transform, 6);
-        animNotifyDirty = true;
-    }
-
-    /// <summary>
-    /// 浴巾造型（纯渲染层）：把头发换成浴巾（按 isGirl 取 femaleHeadTowel / maleHeadTowel），
-    /// 上衣/下衣/手/袜子/脚恢复为默认着装（脚无默认鞋则清空显示），已装备的头脸（FACE）保持不变。
-    /// 只改显示：不修改 wornCloth 穿戴记录、不触发冲突重算、不影响背包/存档。
-    /// 调用 ApplyEquipedSuit() 恢复浴巾造型之前的穿戴显示。
-    /// </summary>
-    public void ApplyBathSuit()
-    {
-        if (bathSnapshot == null)
-            bathSnapshot = new Dictionary<EClothType, ClothBase>(wornCloth); // 只读快照，供恢复用
-
-        GameObject towel = isGirl ? femaleHeadTowel : maleHeadTowel;
-        if (towel == null)
+        // 处理单个槽位的变化
+        void HandleSlot(EClothType slot)
         {
-            return;
-        }
+            ClothBase newCloth = newEquips.GetSlot(slot) as ClothBase;
+            wornCloth.TryGetValue(slot, out ClothBase oldCloth);
 
-        ApplySlot(EClothType.HAIR, towel, GetSlotColors(EClothType.HAIR)); // 浴巾当头发（不写记录）
-
-        WearDefault(EClothType.UPPER);
-        WearDefault(EClothType.BOTTOM);
-        WearDefault(EClothType.HAND);
-        WearDefault(EClothType.STOCKING);
-        ClearSlot(EClothType.SHOE); // 无默认鞋 → 清空渲染（赤脚/袜子兜底）
-
-        animNotifyDirty = true; // 显示变化 → 帧末通知动画系统重建衣服动画覆盖
-    }
-
-    /// <summary>
-    /// 恢复浴巾造型之前的穿戴显示（纯渲染层）：有快照记录的部位按原记录重新穿上，
-    /// 原本就是默认着装的部位恢复默认；头脸全程未动。
-    /// </summary>
-    public void ApplyEquipedSuit()
-    {
-        if (bathSnapshot == null)
-        {
-            return;
-        }
-
-        foreach (EClothType slot in BathSuitSlots)
-        {
-            if (bathSnapshot.TryGetValue(slot, out ClothBase saved)
-                && saved != null && !string.IsNullOrEmpty(saved.prefabPath))
-                Wear(saved); // 恢复原穿戴（记录值与浴巾前一致）
-            else
-                WearDefault(slot); // 原本就是默认着装 → 恢复默认
-        }
-
-        bathSnapshot = null;
-        animNotifyDirty = true;
-    }
-
-    /// <summary>当前某部位穿着的衣服系列（如 Girl0001 / Boy0002）；未穿着或命名不含下划线返回 null。
-    /// 优先用布料记录（Wear 的随机装），其次用当前实例名（默认着装也能推出来）。</summary>
-    public string GetWornClothSeries(EClothType slot)
-    {
-        if (wornCloth.TryGetValue(slot, out ClothBase cloth) && cloth != null && !string.IsNullOrEmpty(cloth.prefabPath))
-            return GetSeries(cloth.prefabPath);
-        if (activeInstanceRoots.TryGetValue(slot, out GameObject root) && root != null)
-            return GetSeries(root.name);
-        return null;
-    }
-
-    /// <summary>系列 = prefab 路径或物体名中，文件名第一个下划线之前的部分（Girl0001_Hair → Girl0001）</summary>
-    public static string GetSeries(string prefabPathOrName)
-    {
-        if (string.IsNullOrEmpty(prefabPathOrName)) return null;
-        int slash = prefabPathOrName.LastIndexOf('/');
-        string fileName = slash >= 0 ? prefabPathOrName.Substring(slash + 1) : prefabPathOrName;
-        int underscore = fileName.IndexOf('_');
-        return underscore > 0 ? fileName.Substring(0, underscore) : null;
-    }
-
-    /// <summary>
-    /// 把工具挂到角色骨骼上：WeaponRoot 挂到 Bip001 R Finger11。
-    /// SetParent(hand, true) 保留世界旋转（握持朝向），随后忽略 prefab 位置
-    /// （localPosition 归零，武器枢轴就在手指骨骼原点），位置完全由骨骼决定。
-    /// </summary>
-    public void SetTool(ToolBase tool)
-    {
-        ClearTool();
-
-        GameObject prefab = Resources.Load<GameObject>(tool.prefabPath);
-        GameObject instance = Instantiate(prefab, equipRoot);
-        instance.name = prefab.name;
-
-        Transform hand = GetHandBone();
-        Transform weaponRoot = FindChildRecursive(instance.transform, "WeaponRoot");
-        weaponRoot.SetParent(hand, true);
-        weaponRoot.localPosition = Vector3.zero;
-
-        activeTool = instance;
-        activeToolExtras.Add(weaponRoot.gameObject);
-
-        foreach (var nodeName in new[] { "BalloonRoot", "IK Chain001", "Line001" })
-        {
-            Transform node = FindChildRecursive(instance.transform, nodeName);
-            if (node != null)
+            if (newCloth == null)
             {
-                node.SetParent(transform, true);
-                activeToolExtras.Add(node.gameObject);
+                // 传过来的null代表卸下该装备
+                if (oldCloth != null)
+                {
+                    wornCloth.Remove(slot);
+                    ClearSlot(slot);
+                }
+
+                // 对于必须穿默认装的部位，卸下后要兜底穿上默认装，防止裸奔
+                bool isDefaultRequired = slot == EClothType.UPPER || slot == EClothType.BOTTOM ||
+                                         slot == EClothType.FACE || slot == EClothType.HAIR ||
+                                         slot == EClothType.HAND || slot == EClothType.STOCKING;
+
+                if (isDefaultRequired && !activeSmrs.ContainsKey(slot))
+                {
+                    WearDefault(slot);
+                }
+            }
+            else
+            {
+                // 传非 null 时直接调 Wear。
+                // Wear 内部已经通过 IsSameAs 做了判断：如果一样则直接 return，不会重新实例化和重载。
+                // 如果不一样，Wear 内部会自动 ClearSlot(slot) 并穿上新的。
+                Wear(newCloth);
             }
         }
 
-        SetLayerRecursively(instance.transform, 6);
-    }
+        // 遍历所有槽位进行对比与更新
+        HandleSlot(EClothType.HAIR);
+        HandleSlot(EClothType.UPPER);
+        HandleSlot(EClothType.BOTTOM);
+        HandleSlot(EClothType.STOCKING);
+        HandleSlot(EClothType.SHOE);
+        HandleSlot(EClothType.HAND);
+        HandleSlot(EClothType.EARRING);
+        HandleSlot(EClothType.FACE);
+        HandleSlot(EClothType.GLASSES);
 
-    /// <summary>卸下当前工具</summary>
-    public void RemoveTool()
-    {
-        ClearTool();
-    }
-
-    // ═══════════════════════════════════════════════════════
-    //  Private 字段
-    // ═══════════════════════════════════════════════════════
-
-    /// <summary>名称 → Transform 的角色骨骼表</summary>
-    private Dictionary<string, Transform> boneMap;
-
-    /// <summary>已生成的装备实例的根容器</summary>
-    private Transform equipRoot;
-
-    /// <summary>每件装备实例化后的 SMR 引用，用于随时替换/清除</summary>
-    private Dictionary<EClothType, SkinnedMeshRenderer> activeSmrs
-        = new Dictionary<EClothType, SkinnedMeshRenderer>();
-
-    /// <summary>每件装备实例化后的根 GameObject（RemapBones 后与 SMR 分离的残留容器），清除装备时一并销毁</summary>
-    private Dictionary<EClothType, GameObject> activeInstanceRoots
-        = new Dictionary<EClothType, GameObject>();
-
-    /// <summary>多 SMR 装备（如上装自带袜子）中除第一个外的额外 SMR 对象，清除时一并销毁</summary>
-    private Dictionary<EClothType, List<GameObject>> activeSmrExtras
-        = new Dictionary<EClothType, List<GameObject>>();
-
-    /// <summary>每件装备克隆进角色骨架的自定义骨骼（Woman_Coat_* 等），换装时必须销毁，避免被下一件复用</summary>
-    private Dictionary<EClothType, List<Transform>> activeCustomBones
-        = new Dictionary<EClothType, List<Transform>>();
-
-    /// <summary>合体后的渲染器（所有普通部位合并为一个 SMR）；null = 未合体</summary>
-    private SkinnedMeshRenderer combinedSmr;
-
-    /// <summary>合体网格需要重建的脏标记（LateUpdate 统一重建，避免一帧多次重建）</summary>
-    private bool meshDirty;
-
-    /// <summary>上一次的 combineMeshes 开关值（运行时开关立即生效，且不会每帧重复重建）</summary>
-    private bool lastCombineToggle = true;
-
-    /// <summary>当前挂载到手上的工具实例（斧头/镐子/剑等）</summary>
-    private GameObject activeTool;
-
-    /// <summary>换装后置位，LateUpdate 统一通知，避免同帧多次换装重复通知</summary>
-    private bool animNotifyDirty;
-
-    /// <summary>工具挂载后残留在角色身上的附属节点（Line001/IK Chain001/BalloonRoot 等）</summary>
-    private readonly List<GameObject> activeToolExtras = new List<GameObject>();
-
-    /// <summary>当前每个部位穿着的布料（用于冲突解除后重新渲染）</summary>
-    private readonly Dictionary<EClothType, ClothBase> wornCloth
-        = new Dictionary<EClothType, ClothBase>();
-
-    /// <summary>浴巾造型前的穿戴快照（仅渲染层恢复用；浴巾期间不修改 wornCloth）</summary>
-    private Dictionary<EClothType, ClothBase> bathSnapshot;
-
-    /// <summary>浴巾造型涉及的部位（头发/上衣/下衣/手/袜子/脚）；头脸（FACE）保持不动</summary>
-    private static readonly EClothType[] BathSuitSlots = new EClothType[]
-    {
-        EClothType.HAIR,
-        EClothType.UPPER,
-        EClothType.BOTTOM,
-        EClothType.HAND,
-        EClothType.STOCKING,
-        EClothType.SHOE,
-    };
-
-    /// <summary>骨架相对角色根的向下偏移，对齐地面用</summary>
-    private const float SkeletonGroundOffset = 0.126f;
-
-    /// <summary>
-    /// 骨架归一化统一由换装系统负责（原来 CharacterBase / NetPlayer / ChangeAvatarCharacter
-    /// 各写了一份，逻辑完全相同）。放在 Awake：它早于任何 Start 里的
-    /// SetGender / ApplyDefaultOutfit，即早于任何骨骼被挂上去之前。
-    /// 依赖 bonesRoot 已在 Inspector 里赋好。
-    /// </summary>
-    protected virtual void Awake()
-    {
-        NormalizeSkeleton();
+        // 重新计算冲突并标记重建
+        ReapplyConflicts();
+        animNotifyDirty = true;
     }
 
     /// <summary>
-    /// 骨架是预先放在 prefab 里的固定子节点，但它的局部坐标不受代码控制
-    /// （拖进来时 Unity 可能保留世界坐标，编辑器里也可能被误动）。
-    /// 这里拉回正确位置：局部零位，再往下挪 SkeletonGroundOffset 对齐地面。
-    /// </summary>
-    public void NormalizeSkeleton()
-    {
-        if (bonesRoot == null)
-        {
-            Log.Error("[Equip] bonesRoot 没赋值，拉不回骨架位置");
-            return;
-        }
-        bonesRoot.localRotation = Quaternion.identity;
-        bonesRoot.localScale = Vector3.one;
-        bonesRoot.localPosition = new Vector3(0f, -SkeletonGroundOffset, 0f);
-    }
-
-    protected virtual void Start()
-    {
-        equipRoot = new GameObject("_EquipRoot").transform;
-        equipRoot.SetParent(transform, false);
-        SetLayerRecursively(transform, 6);
-        Context.boneRef = bonesRoot != null ? bonesRoot.gameObject : null;
-    }
-
-    /// <summary>帧末统一重建合体网格（换装路径可能一帧内多次改动，避免重复合并；无改动时每帧仅一次布尔判断）</summary>
-    protected virtual void LateUpdate()
-    {
-        if (animNotifyDirty)
-        {
-            animNotifyDirty = false;
-            OnEquipChanged?.Invoke();
-        }
-        if (meshDirty)
-        {
-            meshDirty = false;
-            WeldBottomStocking(0.01f);
-            RebuildCombined();
-        }
-        else if (combineMeshes != lastCombineToggle)
-        {
-            // 运行时在 Inspector 开关 combineMeshes → 立即补建/拆除（只在值变化时执行一次，避免每帧空转）
-            lastCombineToggle = combineMeshes;
-            RebuildCombined();
-        }
-    }
-
-    /// <summary>
-    /// 按当前所有穿着布料的 conflictPart 重新计算并应用隐藏：
-    /// 冲突部位被清除不渲染；被解除冲突的部位按记录的布料或默认着装重新渲染。
-    ///
-    /// 特殊规则：若当前穿着的上装（UPPER）的 conflictPart 包含"下装"
-    /// （配置编号 5 → EClothType.BOTTOM，见 ClothBase.ConvertConflictPart），
-    /// 则下装（BOTTOM）自身的 conflictPart 不生效（例如长裙类上装盖住下装时，
-    /// 被盖住的下装不应再去隐藏其他部位）。
+    /// 按当前所有布料的 conflictPart 重算隐藏关系
+    /// 冲突部位清除，解除的重新渲染，且上装压制下装时跳过下装自身的conflictPart。
     /// </summary>
     private void ReapplyConflicts()
     {
-        // 上装是否为"压制下装冲突"的特殊类型：conflictPart 含 BOTTOM（配置编号 5）
+        // 上装是否为压制下装冲突的特殊类型
         bool suppressBottomConflict =
             wornCloth.TryGetValue(EClothType.UPPER, out ClothBase upper)
             && upper.conflictPart != null
@@ -503,72 +324,182 @@ public class Equip : MonoBehaviour
             if (slot == EClothType.NONE) continue;
             if (hidden.Contains(slot)) continue;
             if (activeSmrs.ContainsKey(slot)) continue;
-            ReapplySlot(slot);
-        }
-    }
 
-    /// <summary>重新渲染某部位：有记录的布料用布料，否则用默认着装</summary>
-    private void ReapplySlot(EClothType slot)
-    {
-        if (wornCloth.TryGetValue(slot, out ClothBase cloth) && !string.IsNullOrEmpty(cloth.prefabPath))
-        {
-            GameObject prefab = Resources.Load<GameObject>(cloth.prefabPath);
-            if (prefab != null)
+            if (wornCloth.TryGetValue(slot, out ClothBase cloth) && !string.IsNullOrEmpty(cloth.prefabPath))
             {
-                ApplySlot(slot, prefab, GetSlotColors(slot));
-                return;
+                GameObject prefab = Resources.Load<GameObject>(cloth.prefabPath);
+                if (prefab != null)
+                {
+                    ApplySlot(slot, prefab, GetSlotColors(slot));
+                    continue;
+                }
             }
+            WearDefault(slot);
         }
-        WearDefault(slot);
     }
+    ////////////////////////////////////////浴巾造型////////////////////////////////////////
 
-    /// <summary>穿上某部位的默认着装（不记录布料）。按 isGirl 取男性/女性默认装备</summary>
-    private void WearDefault(EClothType slot)
-    {
-        GameObject prefab = GetDefaultPrefab(slot);
-        if (prefab == null) return;
-        ApplySlot(slot, prefab, GetSlotColors(slot));
-    }
+    [Header("男性女性头上的浴巾")]
+    public GameObject maleHeadTowel;
+    public GameObject femaleHeadTowel;
 
-    /// <summary>某部位的默认装备；没有默认装的部位或未赋值返回 null</summary>
-    private GameObject GetDefaultPrefab(EClothType slot)
+    /// <summary>浴巾造型前的穿戴快照（仅渲染层恢复用；浴巾期间不修改 wornCloth）</summary>
+    private Dictionary<EClothType, ClothBase> bathSnapshot;
+
+    /// <summary>浴巾造型涉及的部位（头发/上衣/下衣/手/袜子/脚）；头脸（FACE）保持不动</summary>
+    private static readonly EClothType[] BathSuitSlots = new EClothType[]
     {
-        switch (slot)
+        EClothType.HAIR,
+        EClothType.UPPER,
+        EClothType.BOTTOM,
+        EClothType.HAND,
+        EClothType.STOCKING,
+        EClothType.SHOE,
+    };
+
+    /// <summary>
+    /// 改成角色外观为洗澡造型
+    /// </summary>
+    public void ApplyBathSuit()
+    {
+        if (bathSnapshot == null)
+            bathSnapshot = new Dictionary<EClothType, ClothBase>(wornCloth); // 只读快照，供恢复用
+
+        GameObject towel = isGirl ? femaleHeadTowel : maleHeadTowel;
+        if (towel == null)
         {
-            case EClothType.UPPER: return isGirl ? femaleDefaultUpper : maleDefaultUpper;
-            case EClothType.BOTTOM: return isGirl ? femaleDefaultBottom : maleDefaultBottom;
-            case EClothType.FACE: return isGirl ? femaleDefaultFace : maleDefaultFace;
-            case EClothType.HAIR: return isGirl ? femaleDefaultHair : maleDefaultHair;
-            case EClothType.HAND: return isGirl ? femaleDefaultHand : maleDefaultHand;
-            case EClothType.STOCKING: return isGirl ? femaleDefaultStocking : maleDefaultStocking;
-            default: return null; // GLASSES / EARRING / SHOE 等无默认装
+            return;
         }
+
+        ApplySlot(EClothType.HAIR, towel, GetSlotColors(EClothType.HAIR)); // 浴巾当头发（不写记录）
+
+        WearDefault(EClothType.UPPER);
+        WearDefault(EClothType.BOTTOM);
+        WearDefault(EClothType.HAND);
+        WearDefault(EClothType.STOCKING);
+        ClearSlot(EClothType.SHOE); // 无默认鞋 → 清空渲染（赤脚/袜子兜底）
+
+        animNotifyDirty = true; // 显示变化 → 帧末通知动画系统重建衣服动画覆盖
     }
 
-    /// <summary>按部位取对应的染色配置</summary>
-    private SlotColors GetSlotColors(EClothType slot)
+    /// <summary>
+    /// 恢复浴巾造型之前的穿戴显示
+    /// </summary>
+    public void ApplyBeforeBathEquipedSuit()
     {
-        switch (slot)
+        if (bathSnapshot == null)
         {
-            case EClothType.HAIR: return hairColors;
-            default: return new SlotColors();
+            return;
         }
+
+        foreach (EClothType slot in BathSuitSlots)
+        {
+            if (bathSnapshot.TryGetValue(slot, out ClothBase saved)
+                && saved != null && !string.IsNullOrEmpty(saved.prefabPath))
+                Wear(saved); // 恢复原穿戴（记录值与浴巾前一致）
+            else
+                WearDefault(slot); // 原本就是默认着装 → 恢复默认
+        }
+
+        bathSnapshot = null;
+        animNotifyDirty = true;
     }
 
-    // ═══════════════════════════════════════════════════════
-    //  Private 方法 —— 工具
-    // ═══════════════════════════════════════════════════════
+    ////////////////////////////////////////穿戴记录与系列////////////////////////////////////////
 
-    /// <summary>销毁当前工具实例及附属节点</summary>
-    private void ClearTool()
+    /// <summary>当前每个部位穿着的布料，用于冲突解除后重新渲染</summary>
+    private readonly Dictionary<EClothType, ClothBase> wornCloth
+        = new Dictionary<EClothType, ClothBase>();
+
+    /// <summary>取当前某部位穿着的布料，未穿着返回 null</summary>
+    public ClothBase GetWornCloth(EClothType slot)
     {
-        Destroy(activeTool);
-        activeTool = null;
-        foreach (var extra in activeToolExtras)
+        wornCloth.TryGetValue(slot, out ClothBase cloth);
+        return cloth;
+    }
+
+    /// <summary>当前某部位是否穿着布料</summary>
+    public bool HasWornCloth(EClothType slot)
+    {
+        return wornCloth.TryGetValue(slot, out ClothBase cloth) && cloth != null;
+    }
+
+    /// <summary>当前某部位穿着的衣服系列（如 Girl0001 / Boy0002）；未穿着或命名不含下划线返回 null。
+    /// 优先用布料记录（Wear 的随机装），其次用当前实例名（默认着装也能推出来）。</summary>
+    public string GetWornClothSeries(EClothType slot)
+    {
+        if (wornCloth.TryGetValue(slot, out ClothBase cloth) && cloth != null && !string.IsNullOrEmpty(cloth.prefabPath))
+            return GetSeries(cloth.prefabPath);
+        if (activeInstanceRoots.TryGetValue(slot, out GameObject root) && root != null)
+            return GetSeries(root.name);
+        return null;
+    }
+
+    /// <summary>系列 = prefab 路径或物体名中，文件名第一个下划线之前的部分（Girl0001_Hair → Girl0001）</summary>
+    public static string GetSeries(string prefabPathOrName)
+    {
+        if (string.IsNullOrEmpty(prefabPathOrName)) return null;
+        int slash = prefabPathOrName.LastIndexOf('/');
+        string fileName = slash >= 0 ? prefabPathOrName.Substring(slash + 1) : prefabPathOrName;
+        int underscore = fileName.IndexOf('_');
+        return underscore > 0 ? fileName.Substring(0, underscore) : null;
+    }
+
+    ////////////////////////////////////////骨架与骨骼映射////////////////////////////////////////
+    /// <summary> {名称: Transform的角色骨骼表}</summary>
+    private Dictionary<string, Transform> boneMap;
+
+    /// <summary>骨架相对角色根的向下偏移，对齐地面用</summary>
+    private const float SkeletonGroundOffset = 0.126f;
+
+    /// <summary>各部位要搬到角色骨骼上的挂点根名字</summary>
+    private static readonly Dictionary<EClothType, string> SlotMountBone = new Dictionary<EClothType, string>
+    {
+        { EClothType.HAIR,     "HairRoot" },
+        { EClothType.BOTTOM,   "Woman_SkirtRoot" },
+        { EClothType.GLASSES,  "GlassesRoot" },
+        { EClothType.EARRING,  "EarringRoot" },
+        { EClothType.FACE,     "FaceRoot" },
+        { EClothType.SHOE,     "ShoestRoot" },
+        { EClothType.STOCKING, "StockingRoot" },
+        { EClothType.HAND,     "HandRoot" },
+        { EClothType.UPPER,    "Woman_CoatRoot" },
+    };
+
+    /// <summary>各部位挂点对应的角色真实骨骼名</summary>
+    private static readonly Dictionary<EClothType, string> SlotMountTarget = new Dictionary<EClothType, string>
+    {
+        { EClothType.HAIR,     "Bip001 Head" },
+        { EClothType.BOTTOM,   "Bip001 Pelvis" },
+        { EClothType.GLASSES,  "Bip001 Head" },
+        { EClothType.EARRING,  "Bip001 Head" },
+        { EClothType.FACE,     "Bip001 Head" },
+        { EClothType.SHOE,     "Bip001 R Calf 1" },
+        { EClothType.STOCKING, "Bip001 R Calf 1" },
+        { EClothType.HAND,     "Bip001 R Hand" },
+        { EClothType.UPPER,    "Bip001" },
+    };
+
+    /// <summary>
+    /// 骨架是预先放在 prefab 里的固定子节点，但它的局部坐标不受代码控制
+    /// （拖进来时 Unity 可能保留世界坐标，编辑器里也可能被误动）。
+    /// 这里拉回正确位置：局部零位，再往下挪 SkeletonGroundOffset 对齐地面。
+    /// </summary>
+    public void NormalizeSkeleton()
+    {
+        if (bonesRoot == null)
         {
-            Destroy(extra);
+            throw new UnityException("[Equip] bonesRoot 未赋值，请在 Inspector 里拖上骨架根");
         }
-        activeToolExtras.Clear();
+        bonesRoot.localRotation = Quaternion.identity;
+        bonesRoot.localScale = Vector3.one;
+        bonesRoot.localPosition = new Vector3(0f, -SkeletonGroundOffset, 0f);
+    }
+
+    /// <summary>清除缓存的角色骨骼表。切换性别（骨架上挂着的克隆骨骼会被换掉）后必须调用。</summary>
+    public void ClearBoneCache()
+    {
+        boneMap = null;
     }
 
     /// <summary>骨架根（男女共用同一骨架；NetPlayer / LocalPlayer 也读它来关掉骨骼物理）</summary>
@@ -577,15 +508,29 @@ public class Equip : MonoBehaviour
         return bonesRoot;
     }
 
-    /// <summary>优先取右手食指骨骼，其次右手手掌，再退左手手掌</summary>
-    private Transform GetHandBone()
+    /// <summary>收集角色的所有骨骼 Transform</summary>
+    private void BuildBoneMap()
     {
+        boneMap = new Dictionary<string, Transform>();
+
         Transform root = GetBonesRoot();
-        Transform finger = FindChildRecursive(root, "Bip001 R Finger11");
-        if (finger != null) return finger;
-        Transform right = FindChildRecursive(root, "Bip001 R Hand");
-        if (right != null) return right;
-        return FindChildRecursive(root, "Bip001 L Hand");
+        Transform[] all = root.GetComponentsInChildren<Transform>(true);
+        foreach (Transform t in all)
+        {
+            if (!boneMap.ContainsKey(t.name))
+                boneMap[t.name] = t;
+        }
+    }
+
+    /// <summary>按名字取角色骨架上的骨骼（含未激活）</summary>
+    private Transform FindBoneByName(string boneName)
+    {
+        if (string.IsNullOrEmpty(boneName)) return null;
+        if (boneMap != null && boneMap.TryGetValue(boneName, out Transform cached)) return cached;
+
+        Transform root = GetBonesRoot();
+        if (root == null) root = transform;
+        return FindChildRecursive(root, boneName);
     }
 
     /// <summary>递归查找子节点（含未激活），返回第一个同名 Transform</summary>
@@ -601,17 +546,174 @@ public class Equip : MonoBehaviour
         return null;
     }
 
-    // ═══════════════════════════════════════════════════════
-    //  Private 方法 —— 插槽装配
-    // ═══════════════════════════════════════════════════════
+    /// <summary>
+    /// 把单个 SMR 引用的骨骼全部注册到角色的骨骼层级中：
+    ///   - 标准 Bip001 骨骼 → 直接引用角色的同名骨骼
+    ///   - 自定义骨骼（Woman_Skirt_* / HatRoot 等）→ 沿装备层级向上找到最近的
+    ///     角色骨骼，把中间链路原样克隆到角色骨架下
+    /// 只做重映射，不做清理（多 SMR 装备需全部重映射后再统一清理，避免误删其他 SMR）。
+    ///
+    /// 【绑上 ≠ 能活到最后】这里写进 bones 的，有一部分是刚克隆进角色骨架的普通 GameObject
+    /// （见 GetOrCreateBoneInCharacter），并不受本部位"所有权"保护：别处一次按名字清理同名残留、
+    /// 或别的插槽换装时的销毁，都可能把它带走。而 Destroy 是帧末才执行的，
+    /// 所以"绑的时候还在"绝不能当成"之后还在"。
+    /// 一旦换装跨了帧，这些引用就变成已销毁对象（裙骨 + 上衣踩过：绑定全部成功，之后 15 根裙骨全是 null）。
+    /// 规避方式见 LateUpdate 上方的说明。
+    /// </summary>
+    private void RemapBones(SkinnedMeshRenderer smr, GameObject instance, Dictionary<(Transform, string), Transform> createdThisWear)
+    {
+        // ── remap bones 数组（保留索引与 bindpose 的对应关系）──
+        Transform[] bones = smr.bones;
+        bool changed = false;
+        for (int i = 0; i < bones.Length; i++)
+        {
+            Transform src = bones[i];
+            if (src == null) continue;
+
+            if (boneMap.TryGetValue(src.name, out Transform charBone))
+            {
+                bones[i] = charBone;
+                changed = true;
+            }
+            else
+            {
+                Transform cloned = GetOrCreateBoneInCharacter(src, instance, createdThisWear);
+                if (cloned != null)
+                {
+                    bones[i] = cloned;
+                    changed = true;
+                }
+            }
+        }
+        if (changed) smr.bones = bones;
+
+        // ── remap rootBone ──
+        if (smr.rootBone != null)
+        {
+            if (boneMap.TryGetValue(smr.rootBone.name, out Transform charRoot))
+            {
+                smr.rootBone = charRoot;
+            }
+            else
+            {
+                Transform cloned = GetOrCreateBoneInCharacter(smr.rootBone, instance, createdThisWear);
+                if (cloned != null) smr.rootBone = cloned;
+            }
+        }
+
+        // SMR 的 GameObject 提为 equipRoot 的直接子级（与装备骨骼分离）
+        smr.transform.SetParent(equipRoot, true);
+    }
+
+    /// <summary>
+    /// 将装备中的自定义骨骼在角色的骨架下创建出对应的副本。
+    /// 从 <paramref name="customBone"/> 沿 parent 向上走，找到第一个在
+    /// <see cref="boneMap"/> 中存在的祖先，然后把中间的自定义骨骼链路
+    /// 原样（localPosition / localRotation / localScale）克隆到角色对应祖先下面。
+    ///
+    /// 【名字撞车是这个函数的固有风险】克隆链顶端那个节点的名字，就是装备里最上面那层自定义骨骼的
+    /// 名字（例如 Woman_SkirtRoot）。如果这个名字恰好等于别的部位挂点表里的挂点根（SlotMountBone），
+    /// 那个部位上装时就会去挂点目标底下"清理同名旧节点"，而它找到的正是这里克隆出来的**活骨骼**，
+    /// 于是整条链被摘掉销毁。历史事故：上衣 Woman_Girl0002_Upper 引用裙骨、但它的挂点根
+    /// Woman_CoatRoot 在 prefab 里不存在，裙骨只能走克隆路径，克隆链顶端也叫 Woman_SkirtRoot；
+    /// 紧接着穿下装（挂点根正是 Woman_SkirtRoot → Bip001）就把它当残留删了。
+    /// 所以：往 SlotMountBone 里加名字前，先确认不会和别的部位克隆出来的链撞名；
+    /// 挂点清理那边也必须先判断"是否还被在穿的 SMR 引用"（见 ApplySlot 挂点段）。
+    ///
+    /// 返回角色骨架下与 customBone 对应的 Transform。
+    /// </summary>
+    private Transform GetOrCreateBoneInCharacter(Transform customBone, GameObject instance, Dictionary<(Transform, string), Transform> createdThisWear)
+    {
+        if (customBone == null) return null;
+
+        // 先收集从 customBone 到 instanceRoot 的链路（[0]=最底层=src）
+        var chain = new List<(string name, Vector3 pos, Quaternion rot, Vector3 scale)>();
+        Transform walk = customBone;
+        while (walk != null && walk != instance.transform)
+        {
+            chain.Add((walk.name, walk.localPosition, walk.localRotation, walk.localScale));
+            if (boneMap.ContainsKey(walk.name))
+                break; // 走到角色骨骼就停，这一层就是锚点
+            walk = walk.parent;
+        }
+
+        if (chain.Count == 0) return null;
+
+        // chain[last] 是锚点（名字在角色表中存在）
+        // 从锚点下一层开始，逐层在角色骨架下创建
+        Transform anchor = null;
+        int startIdx = chain.Count - 1;
+
+        // 先确认锚点
+        string anchorName = chain[startIdx].name;
+        if (!boneMap.TryGetValue(anchorName, out anchor))
+        {
+            // 链路一直走到 instanceRoot 都没找到角色骨骼 → 挂到 equipRoot 下，
+            // 从最顶层开始全部创建（startIdx = chain.Count）
+            anchor = equipRoot;
+            startIdx = chain.Count;
+        }
+
+        // 从锚点的下一层开始，逐层创建/找到子骨骼
+        // 只复用本次穿戴创建过的骨骼，绝不复用历史装备留下的克隆
+        Transform current = anchor;
+        for (int i = startIdx - 1; i >= 0; i--)
+        {
+            var (name, pos, rot, scale) = chain[i];
+
+            if (createdThisWear.TryGetValue((current, name), out Transform existing))
+            {
+                current = existing;
+                continue;
+            }
+
+            GameObject go = new GameObject(name);
+            go.transform.SetParent(current, false);
+            go.transform.localPosition = pos;
+            go.transform.localRotation = rot;
+            go.transform.localScale = scale;
+            createdThisWear[(current, name)] = go.transform;
+            current = go.transform;
+        }
+
+        return current; // 这就是 customBone 在角色骨架下的等价物
+    }
+
+
+
+    ////////////////////////////////////////插槽装配////////////////////////////////////////
+    /// <summary>已生成的装备实例的根容器</summary>
+    private Transform equipRoot;
+
+    /// <summary>每件装备实例化后的 SMR 引用，用于随时替换/清除</summary>
+    private Dictionary<EClothType, SkinnedMeshRenderer> activeSmrs
+        = new Dictionary<EClothType, SkinnedMeshRenderer>();
+
+    /// <summary>每件装备实例化后的根 GameObject（RemapBones 后与 SMR 分离的残留容器），清除装备时一并销毁</summary>
+    private Dictionary<EClothType, GameObject> activeInstanceRoots
+        = new Dictionary<EClothType, GameObject>();
+
+    /// <summary>多 SMR 装备（如上装自带袜子）中除第一个外的额外 SMR 对象，清除时一并销毁</summary>
+    private Dictionary<EClothType, List<GameObject>> activeSmrExtras
+        = new Dictionary<EClothType, List<GameObject>>();
+
+    /// <summary>每件装备克隆进角色骨架的自定义骨骼（Woman_Coat_* 等），换装时必须销毁，避免被下一件复用</summary>
+    private Dictionary<EClothType, List<Transform>> activeCustomBones
+        = new Dictionary<EClothType, List<Transform>>();
 
     /// <summary>真正销毁某部位当前的装备（不恢复默认）</summary>
     private void ClearSlot(EClothType slot)
     {
         if (activeSmrs.TryGetValue(slot, out SkinnedMeshRenderer oldSmr))
         {
-            Destroy(oldSmr.gameObject);
+            // 先摘表，再销毁；而且销毁之前必须判空。
+            // 表里可能有已经被别处销毁过的渲染器（历史事故：装备被建成场景根对象、
+            // 随场景卸载一起被销毁，这里就留着死引用）。不判空会直接抛
+            // MissingReferenceException，把整条"卸下/换装"流程打断在半路 ——
+            // wornCloth 已经清了、WearDefault 还没穿，数据侧和渲染侧从此错位，
+            // 而且异常是从拖拽回调里抛出去的，拖拽残影也来不及销毁、会卡在屏幕上。
             activeSmrs.Remove(slot);
+            if (oldSmr != null) Destroy(oldSmr.gameObject);
         }
         if (activeSmrExtras.TryGetValue(slot, out List<GameObject> oldExtras))
         {
@@ -636,13 +738,20 @@ public class Equip : MonoBehaviour
                 // 新装备就被绑到这批"待销毁"骨骼上 → 帧末变 null → 蒙皮顶点被拉飞
                 // （表现就是换装后头发/裙摆被拉伸变形）。SetParent(null) 让它们当帧
                 // 就从骨架里消失，Destroy 只负责回收内存。
+                //
+                // 【危险：这批骨骼可能正被别的部位用着】骨骼挂在角色骨架上是公共资源，
+                // 别的部位会按名字找到并绑上去（先穿下装时，下装把 Woman_SkirtRoot 搬到 Bip001 下，
+                // 之后穿的上衣因为自己没有挂点表项，就直接按名字绑到这条链上）。这种情况下在这里
+                // 一律销毁，会把那个部位一起弄死：它下次合体时这些骨骼已经是 null，整个部件被排除
+                // （表现：整件衣服消失）。改这段之前，先加上"是否仍被其它在穿 SMR 的 bones/rootBone
+                // 引用"的判断，只销毁确实没人用的。
                 b.SetParent(null, false);
                 Destroy(b.gameObject);
             }
             activeCustomBones.Remove(slot);
         }
 
-        meshDirty = true; // 部位集合变化 → 帧末重建合体网格
+        meshDirty = true; // 部位集合变化，则帧末重建合体网格
     }
 
     /// <summary>替换单个插槽（实例化 → 所有 SMR 骨骼重映射 → 清理冗余 → 材质参数）</summary>
@@ -687,6 +796,17 @@ public class Equip : MonoBehaviour
                 {
                     // 先清掉角色锚点上同名的旧节点（原版 Object.Destroy(gameObject2)）
                     // 同样必须立刻脱离：延迟销毁的同名节点会被后面的 BuildBoneMap 抢先记录
+                    //
+                    // 【危险：这个"同名旧节点"不一定是垃圾】它可能是别的部位克隆进骨架、
+                    // 并且正被那件在穿的 SMR 当骨头用的链。历史事故：Woman_SkirtRoot 被两个部位共用 ——
+                    // 上衣 Woman_Girl0002_Upper 引用裙骨，但它自己的挂点根 Woman_CoatRoot 在 prefab 里
+                    // 不存在，整段挂点跳过，裙骨只能走 GetOrCreateBoneInCharacter 克隆进骨架，
+                    // 克隆链顶端也叫 Woman_SkirtRoot；紧接着穿下装（挂点根正是 Woman_SkirtRoot → Bip001）
+                    // 就把上衣那条活链当残留删了，上衣 15 根裙骨全灭，合体时按 null 被整体排除
+                    // （表现：少掉上衣/躯干）。
+                    // 所以改动这里或往 SlotMountBone 加名字之前，必须保证：
+                    //   1) 只删"没有任何在穿 SMR 的 bones/rootBone 引用它或它子节点"的节点；
+                    //   2) 同一个名字在同一副骨架下只允许存在一条链（要么挂点搬移，要么克隆，不能两者都有）。
                     Transform stale = FindChildRecursive(mountTarget, mountRoot.name);
                     if (stale != null && stale != mountRoot)
                     {
@@ -779,6 +899,27 @@ public class Equip : MonoBehaviour
         meshDirty = true; // 部位集合变化 → 帧末重建合体网格
     }
 
+
+
+    /// <summary>返回当前所有穿戴的 SMR（主 SMR + 多 SMR 装备的额外 SMR）</summary>
+    private List<SkinnedMeshRenderer> GetAllActiveSmrs()
+    {
+        var list = new List<SkinnedMeshRenderer>();
+        foreach (var kv in activeSmrs)
+            if (kv.Value != null) list.Add(kv.Value);
+        foreach (var kv in activeSmrExtras)
+        {
+            if (kv.Value == null) continue;
+            foreach (GameObject go in kv.Value)
+            {
+                if (go == null) continue;
+                SkinnedMeshRenderer s = go.GetComponent<SkinnedMeshRenderer>();
+                if (s != null) list.Add(s);
+            }
+        }
+        return list;
+    }
+
     // 遍历Layer，修改为6player，使其能够被玩家相机拍到。
     private void SetLayerRecursively(Transform root, int layer)
     {
@@ -790,142 +931,9 @@ public class Equip : MonoBehaviour
         }
     }
 
-    /// <summary>收集角色的所有骨骼 Transform</summary>
-    private void BuildBoneMap()
-    {
-        boneMap = new Dictionary<string, Transform>();
 
-        Transform root = GetBonesRoot();
-        Transform[] all = root.GetComponentsInChildren<Transform>(true);
-        foreach (Transform t in all)
-        {
-            if (!boneMap.ContainsKey(t.name))
-                boneMap[t.name] = t;
-        }
-    }
 
-    /// <summary>
-    /// 把单个 SMR 引用的骨骼全部注册到角色的骨骼层级中：
-    ///   - 标准 Bip001 骨骼 → 直接引用角色的同名骨骼
-    ///   - 自定义骨骼（Woman_Skirt_* / HatRoot 等）→ 沿装备层级向上找到最近的
-    ///     角色骨骼，把中间链路原样克隆到角色骨架下
-    /// 只做重映射，不做清理（多 SMR 装备需全部重映射后再统一清理，避免误删其他 SMR）。
-    /// </summary>
-    private void RemapBones(SkinnedMeshRenderer smr, GameObject instance, Dictionary<(Transform, string), Transform> createdThisWear)
-    {
-        // ── remap bones 数组（保留索引与 bindpose 的对应关系）──
-        Transform[] bones = smr.bones;
-        bool changed = false;
-        for (int i = 0; i < bones.Length; i++)
-        {
-            Transform src = bones[i];
-            if (src == null) continue;
-
-            if (boneMap.TryGetValue(src.name, out Transform charBone))
-            {
-                // 标准骨骼 → 指向角色骨骼
-                bones[i] = charBone;
-                changed = true;
-            }
-            else
-            {
-                // 自定义骨骼 → 在角色层级下创建/定位
-                Transform cloned = GetOrCreateBoneInCharacter(src, instance, createdThisWear);
-                if (cloned != null)
-                {
-                    bones[i] = cloned;
-                    changed = true;
-                }
-            }
-        }
-        if (changed) smr.bones = bones;
-
-        // ── remap rootBone ──
-        if (smr.rootBone != null)
-        {
-            if (boneMap.TryGetValue(smr.rootBone.name, out Transform charRoot))
-            {
-                smr.rootBone = charRoot;
-            }
-            else
-            {
-                Transform cloned = GetOrCreateBoneInCharacter(smr.rootBone, instance, createdThisWear);
-                if (cloned != null) smr.rootBone = cloned;
-            }
-        }
-
-        // SMR 的 GameObject 提为 equipRoot 的直接子级（与装备骨骼分离）
-        smr.transform.SetParent(equipRoot, true);
-    }
-
-    /// <summary>
-    /// 将装备中的自定义骨骼在角色的骨架下创建出对应的副本。
-    /// 从 <paramref name="customBone"/> 沿 parent 向上走，找到第一个在
-    /// <see cref="boneMap"/> 中存在的祖先，然后把中间的自定义骨骼链路
-    /// 原样（localPosition / localRotation / localScale）克隆到角色对应祖先下面。
-    ///
-    /// 返回角色骨架下与 customBone 对应的 Transform。
-    /// </summary>
-    private Transform GetOrCreateBoneInCharacter(Transform customBone, GameObject instance, Dictionary<(Transform, string), Transform> createdThisWear)
-    {
-        if (customBone == null) return null;
-
-        // 先收集从 customBone 到 instanceRoot 的链路（[0]=最底层=src）
-        var chain = new List<(string name, Vector3 pos, Quaternion rot, Vector3 scale)>();
-        Transform walk = customBone;
-        while (walk != null && walk != instance.transform)
-        {
-            chain.Add((walk.name, walk.localPosition, walk.localRotation, walk.localScale));
-            if (boneMap.ContainsKey(walk.name))
-                break; // 走到角色骨骼就停，这一层就是锚点
-            walk = walk.parent;
-        }
-
-        if (chain.Count == 0) return null;
-
-        // chain[last] 是锚点（名字在角色表中存在）
-        // 从锚点下一层开始，逐层在角色骨架下创建
-        Transform anchor = null;
-        int startIdx = chain.Count - 1;
-
-        // 先确认锚点
-        string anchorName = chain[startIdx].name;
-        if (!boneMap.TryGetValue(anchorName, out anchor))
-        {
-            // 链路一直走到 instanceRoot 都没找到角色骨骼 → 挂到 equipRoot 下，
-            // 从最顶层开始全部创建（startIdx = chain.Count）
-            anchor = equipRoot;
-            startIdx = chain.Count;
-        }
-
-        // 从锚点的下一层开始，逐层创建/找到子骨骼
-        // 只复用本次穿戴创建过的骨骼，绝不复用历史装备留下的克隆
-        Transform current = anchor;
-        for (int i = startIdx - 1; i >= 0; i--)
-        {
-            var (name, pos, rot, scale) = chain[i];
-
-            if (createdThisWear.TryGetValue((current, name), out Transform existing))
-            {
-                current = existing;
-                continue;
-            }
-
-            GameObject go = new GameObject(name);
-            go.transform.SetParent(current, false);
-            go.transform.localPosition = pos;
-            go.transform.localRotation = rot;
-            go.transform.localScale = scale;
-            createdThisWear[(current, name)] = go.transform;
-            current = go.transform;
-        }
-
-        return current; // 这就是 customBone 在角色骨架下的等价物
-    }
-
-    // ═══════════════════════════════════════════════════════
-    //  Private 方法 —— 材质
-    // ═══════════════════════════════════════════════════════
+    ////////////////////////////////////////材质与烘焙////////////////////////////////////////
 
     /// <summary>
     /// 材质参数由代码在运行时统一覆盖（不依赖预制体/材质资产里序列化的值）：
@@ -996,247 +1004,508 @@ public class Equip : MonoBehaviour
         smr.sharedMaterials = newMats;
     }
 
-    // ═══════════════════════════════════════════════════════
-    //  Private 方法 —— 网格合体（复刻原版 CombineMesh.SkinnedMeshCombiner）
-    // ═══════════════════════════════════════════════════════
+
+
+    ////////////////////////////////////////网格焊接////////////////////////////////////////
+
+    /// <summary>部位集合变化的脏标记（LateUpdate 统一焊接，避免一帧多次）</summary>
+    private bool meshDirty;
+
+    // 合并Bottom和Stocking的顶点
+    private void WeldBottomStocking(float threshold = 0.001f)
+    {
+        if (!activeSmrs.TryGetValue(EClothType.BOTTOM, out var bottomSmr) || bottomSmr == null) return;
+        if (!activeSmrs.TryGetValue(EClothType.STOCKING, out var stockSmr) || stockSmr == null) return;
+
+        var bMesh = bottomSmr.sharedMesh;
+        var sMesh = stockSmr.sharedMesh;
+        if (bMesh == null || sMesh == null) return;
+
+        bMesh = Instantiate(bMesh); bottomSmr.sharedMesh = bMesh;
+        sMesh = Instantiate(sMesh); stockSmr.sharedMesh = sMesh;
+
+        var bVerts = bMesh.vertices;
+        var sVerts = sMesh.vertices;
+        var bWeights = bMesh.boneWeights;
+        var sWeights = sMesh.boneWeights;
+
+        var bBones = bottomSmr.bones;
+        var sBones = stockSmr.bones;
+
+        // Transform: 各自索引
+        var bBoneToIdx = new Dictionary<Transform, int>();
+        var sBoneToIdx = new Dictionary<Transform, int>();
+        for (int i = 0; i < bBones.Length; i++) if (bBones[i] != null) bBoneToIdx[bBones[i]] = i;
+        for (int i = 0; i < sBones.Length; i++) if (sBones[i] != null) sBoneToIdx[sBones[i]] = i;
+
+        Matrix4x4 sToB = bottomSmr.transform.worldToLocalMatrix * stockSmr.transform.localToWorldMatrix;
+        float sqr = threshold * threshold;
+
+        // Stocking 顶点变换到 Bottom 本地空间（只算一次；原来写在最内层循环里，每个配对都重算一遍）
+        var sVertsInB = new Vector3[sVerts.Length];
+        for (int j = 0; j < sVerts.Length; j++) sVertsInB[j] = sToB.MultiplyPoint3x4(sVerts[j]);
+
+        // 先收集所有"位置重合"的顶点对（原来边找边改权重，会因为权重被覆盖而互相干扰）
+        var matches = new List<int>();   // 扁平存放 i, j 对
+        for (int i = 0; i < bVerts.Length; i++)
+        {
+            Vector3 bp = bVerts[i];
+            for (int j = 0; j < sVerts.Length; j++)
+            {
+                if ((bp - sVertsInB[j]).sqrMagnitude > sqr) continue;
+                matches.Add(i);
+                matches.Add(j);
+            }
+        }
+        if (matches.Count == 0) return;
+
+        // 每个顶点最多参与一次合并
+        var bGroup = new int[bVerts.Length];
+        var sGroup = new int[sVerts.Length];
+        for (int i = 0; i < bGroup.Length; i++) bGroup[i] = -1;
+        for (int j = 0; j < sGroup.Length; j++) sGroup[j] = -1;
+
+        var gB = new List<int>();
+        var gS = new List<int>();
+
+        // 骨骼权重平均（保留原有的 AccumulateBW / MakeBW 逻辑）
+        for (int k = 0; k + 1 < matches.Count; k += 2)
+        {
+            int i = matches[k], j = matches[k + 1];
+            if (bGroup[i] >= 0 || sGroup[j] >= 0) continue;
+
+            int gid = gB.Count;
+            bGroup[i] = gid; gB.Add(i);
+            sGroup[j] = gid; gS.Add(j);
+
+            var avg = new Dictionary<Transform, float>();
+            AccumulateBW(avg, bBones, bWeights[i]);
+            AccumulateBW(avg, sBones, sWeights[j]);
+
+            var list = new List<KeyValuePair<Transform, float>>(avg);
+            list.Sort((a, b) => b.Value.CompareTo(a.Value));
+
+            // 各自映射回自己的索引空间。
+            // fallback 传该顶点【原来】的权重：候选骨骼一根都映射不上时保留原权重，
+            // 绝不写出"权重和 < 1"的顶点（那种顶点会被 Unity 朝网格原点收缩，腿看着就断了）。
+            bWeights[i] = MakeBW(list, bBoneToIdx, bWeights[i]);
+            sWeights[j] = MakeBW(list, sBoneToIdx, sWeights[j]);
+        }
+
+        bMesh.boneWeights = bWeights;
+        sMesh.boneWeights = sWeights;
+
+        // ---- 位置 + 法线 + 切线 也一并合并（等价于 Blender 的 Merge by Distance）----
+        // 只平均属性、不改顶点数与三角形索引。
+        var bNormals = bMesh.normals;
+        var sNormals = sMesh.normals;
+        var bTangents = bMesh.tangents;
+        var sTangents = sMesh.tangents;
+        bool doPos = bNormals != null && bNormals.Length == bVerts.Length
+                  && sNormals != null && sNormals.Length == sVerts.Length;
+        if (!doPos) return;
+
+        var bN = (Vector3[])bNormals.Clone();
+        var sN = (Vector3[])sNormals.Clone();
+        var bT = bTangents != null && bTangents.Length == bVerts.Length ? (Vector4[])bTangents.Clone() : null;
+        var sT = sTangents != null && sTangents.Length == sVerts.Length ? (Vector4[])sTangents.Clone() : null;
+
+        for (int g = 0; g < gB.Count; g++)
+        {
+            int i = gB[g], j = gS[g];
+
+            // 位置取平均
+            Vector3 pm = (bVerts[i] + sVertsInB[j]) * 0.5f;
+            bVerts[i] = pm;
+            sVerts[j] = sToB.inverse.MultiplyPoint3x4(pm);
+
+            // 法线取平均（归一化）
+            Vector3 n = bN[i] + sN[j];
+            if (n.sqrMagnitude > 1e-12f) n.Normalize();
+            bN[i] = n;
+            sN[j] = n;
+
+            // 切线取平均（与法线保持正交；w 取和，即"两次镜像 = 不翻转"）
+            if (bT != null && sT != null)
+            {
+                Vector3 t = new Vector3(bT[i].x + sT[j].x, bT[i].y + sT[j].y, bT[i].z + sT[j].z);
+                t -= n * Vector3.Dot(n, t);
+                if (t.sqrMagnitude > 1e-12f) t.Normalize();
+                float tw = bT[i].w + sT[j].w;
+                Vector4 tm = new Vector4(t.x, t.y, t.z, tw >= 0f ? 1f : -1f);
+                bT[i] = tm;
+                sT[j] = tm;
+            }
+        }
+
+        bMesh.normals = bN;
+        sMesh.normals = sN;
+        bMesh.vertices = bVerts;
+        sMesh.vertices = sVerts;
+        if (bT != null && sT != null)
+        {
+            bMesh.tangents = bT;
+            sMesh.tangents = sT;
+        }
+    }
+
+    private static void AccumulateBW(Dictionary<Transform, float> dict, Transform[] bones, BoneWeight bw)
+    {
+        void Add(int idx, float w)
+        {
+            if (w <= 0f || idx < 0 || idx >= bones.Length) return;
+            var t = bones[idx];
+            if (t == null) return;
+            dict.TryGetValue(t, out var c);
+            dict[t] = c + w;
+        }
+        Add(bw.boneIndex0, bw.weight0);
+        Add(bw.boneIndex1, bw.weight1);
+        Add(bw.boneIndex2, bw.weight2);
+        Add(bw.boneIndex3, bw.weight3);
+    }
 
     /// <summary>
-    /// 把所有已穿戴部位的 SMR 合并成一个 SkinnedMeshRenderer：
-    ///   - 顶点/法线/切线/UV 按原样拼接（所有部件同骨架、同 bind pose，可直接拼接）
-    ///   - bones 数组按顺序拼接，boneWeights 索引逐个偏移
-    ///   - bindposes 按 bones 同序拼接（Mesh.CombineMeshes 不处理 bindpose，必须手动补）
-    ///   - 每个部件的材质按子网格顺序保留（不合并材质、不做图集）
-    ///   - 带 blendshape 的部件（表情脸等）不参与合体，保持独立渲染
-    /// 合体后各部件 SMR 关闭渲染（GameObject 保留，下次换装时按当前部位集合重建）。
-    /// 数学依据：SkinnedMeshRenderer 的渲染只依赖 mesh + bones + bindposes，
-    /// 不依赖 SMR 自身 Transform，因此各部件 mesh 原样拼接 + bindpose 原样拼接即可，
-    /// 与各部件单独渲染时逐顶点的蒙皮结果完全一致。
+    /// 把"下装 + 袜子权重相加后的候选集"折算成【某一件网格自己的】BoneWeight。
+    ///
+    /// 【必须只在本网格骨骼表里挑骨骼，并按它们的和归一化】原来是把前 4 个候选（可能含
+    /// 映射不上的骨骼）的和当分母，映射不上的跳过不写，结果写出去的权重和小于 1。
+    /// Unity 蒙皮对权重和不足 1 的顶点会按缺失比例把它朝网格原点收缩 —— 一整片顶点被收缩，
+    /// 看上去就是那条腿/裙摆"从中间断掉"。长筒袜踩过这个坑：它的骨骼表里只有 Bip001 *，
+    /// 没有下装的 Woman_Skirt_*，而下装的权重会混进同一个排序里，被算进分母又被跳过。
+    /// 一根都映射不上时退回该顶点原来的权重（<paramref name="fallback"/>），
+    /// 保证任何情况下写出去的权重和都是 1。
     /// </summary>
-    private void RebuildCombined()
+    private static BoneWeight MakeBW(List<KeyValuePair<Transform, float>> sorted, Dictionary<Transform, int> boneToIdx, BoneWeight fallback)
     {
-        try
+        var idx = new int[4];
+        var val = new float[4];
+        int n = 0;
+        float total = 0f;
+        for (int i = 0; i < sorted.Count && n < 4; i++)
         {
-            if (equipRoot == null)
-            {
-                equipRoot = new GameObject("_EquipRoot").transform;
-                equipRoot.SetParent(transform, false);
-            }
-
-            if (combinedSmr != null)
-            {
-                combinedSmr.gameObject.SetActive(false);
-                Destroy(combinedSmr.gameObject);
-                combinedSmr = null;
-            }
-
-            // 收集所有穿戴的 SMR（主 + 多 SMR 装备的额外 SMR）
-            List<SkinnedMeshRenderer> allSmrs = GetAllActiveSmrs();
-
-            // 合体关闭或部位不足时：保持各部件独立渲染
-            if (!combineMeshes || allSmrs.Count < 2)
-            {
-                foreach (SkinnedMeshRenderer smr in allSmrs)
-                    if (smr != null) smr.enabled = true;
-                return;
-            }
-
-            // 第一遍：筛选可合体的部件（blendshape / 无网格 / 无权重 / 骨骼未绑全的部件保持独立）
-            var sources = new List<SkinnedMeshRenderer>();
-            foreach (SkinnedMeshRenderer smr in allSmrs)
-            {
-                Mesh m = smr.sharedMesh;
-                if (m == null || m.vertexCount == 0 || m.subMeshCount == 0) { smr.enabled = true; continue; }
-                if (m.blendShapeCount > 0) { smr.enabled = true; continue; }
-                if (smr.bones.Length == 0) { smr.enabled = true; continue; }
-                // 缺 bindpose 的部件不参与合体：合并时缺的 bindpose 用单位矩阵兜底会把
-                // 对应骨骼蒙皮的顶点拉到骨骼位置（裙摆被拉伸到头部）。保持独立渲染。
-                if (m.bindposes == null || m.bindposes.Length != smr.bones.Length) { smr.enabled = true; continue; }
-                if (m.boneWeights == null || m.boneWeights.Length != m.vertexCount) { smr.enabled = true; continue; }
-                bool hasNullBone = false;
-                foreach (Transform b in smr.bones)
-                {
-                    if (b == null) { hasNullBone = true; break; }
-                }
-                if (hasNullBone) { smr.enabled = true; continue; }
-                sources.Add(smr);
-            }
-
-            if (sources.Count < 2)
-            {
-                foreach (SkinnedMeshRenderer smr in allSmrs)
-                    if (smr != null) smr.enabled = true;
-                return;
-            }
-
-            // 第二遍：拼接网格数据
-            var vertices = new List<Vector3>();
-            var normals = new List<Vector3>();
-            var tangents = new List<Vector4>();
-            var uvs = new List<Vector2>();
-            var uvs2 = new List<Vector2>();
-            var uvs3 = new List<Vector2>();
-            var colors = new List<Color32>();
-            var submeshes = new List<List<int>>();
-            var materials = new List<Material>();
-            var bones = new List<Transform>();
-            var bindposes = new List<Matrix4x4>();
-            var weights = new List<BoneWeight>();
-
-            bool hasAnyUv = false, hasAnyUv2 = false, hasAnyUv3 = false, hasAnyColor = false;
-
-            foreach (SkinnedMeshRenderer smr in sources)
-            {
-                Mesh m = smr.sharedMesh;
-                int vBase = vertices.Count;
-                int boneOffset = bones.Count;
-                int vc = m.vertexCount;
-
-                vertices.AddRange(m.vertices);
-
-                if (m.HasVertexAttribute(VertexAttribute.Normal))
-                    normals.AddRange(m.normals);
-                else
-                    for (int i = 0; i < vc; i++) normals.Add(Vector3.up);
-
-                if (m.HasVertexAttribute(VertexAttribute.Tangent))
-                    tangents.AddRange(m.tangents);
-                else
-                    for (int i = 0; i < vc; i++) tangents.Add(new Vector4(1f, 0f, 0f, 1f));
-
-                if (m.HasVertexAttribute(VertexAttribute.TexCoord0)) { uvs.AddRange(m.uv); hasAnyUv = true; }
-                else for (int i = 0; i < vc; i++) uvs.Add(Vector2.zero);
-
-                if (m.HasVertexAttribute(VertexAttribute.TexCoord1)) { uvs2.AddRange(m.uv2); hasAnyUv2 = true; }
-                else for (int i = 0; i < vc; i++) uvs2.Add(Vector2.zero);
-
-                if (m.HasVertexAttribute(VertexAttribute.TexCoord2)) { uvs3.AddRange(m.uv3); hasAnyUv3 = true; }
-                else for (int i = 0; i < vc; i++) uvs3.Add(Vector2.zero);
-
-                if (m.HasVertexAttribute(VertexAttribute.Color)) { colors.AddRange(m.colors32); hasAnyColor = true; }
-                else for (int i = 0; i < vc; i++) colors.Add(new Color32(255, 255, 255, 255));
-
-                // bones + bindposes 同序拼接（bindpose 缺失的骨骼用单位矩阵兜底）
-                Transform[] partBones = smr.bones;
-                Matrix4x4[] partBindposes = m.bindposes;
-                for (int i = 0; i < partBones.Length; i++)
-                {
-                    bones.Add(partBones[i]);
-                    bindposes.Add((partBindposes != null && i < partBindposes.Length)
-                        ? partBindposes[i] : Matrix4x4.identity);
-                }
-
-                // boneWeights：骨骼索引偏移到拼接后的骨骼数组
-                BoneWeight[] partWeights = m.boneWeights;
-                for (int v = 0; v < partWeights.Length; v++)
-                {
-                    BoneWeight bw = partWeights[v];
-                    bw.boneIndex0 += boneOffset;
-                    bw.boneIndex1 += boneOffset;
-                    bw.boneIndex2 += boneOffset;
-                    bw.boneIndex3 += boneOffset;
-                    weights.Add(bw);
-                }
-
-                // 子网格按顺序保留，每个子网格对应一个材质
-                Material[] mats = smr.sharedMaterials;
-                for (int s = 0; s < m.subMeshCount; s++)
-                {
-                    int[] tris = m.GetTriangles(s);
-                    int[] offsetTris = new int[tris.Length];
-                    for (int t = 0; t < tris.Length; t++) offsetTris[t] = tris[t] + vBase;
-                    submeshes.Add(new List<int>(offsetTris));
-                    materials.Add((mats != null && s < mats.Length) ? mats[s] : null);
-                }
-            }
-
-            // 创建合体渲染器 
-            GameObject go = new GameObject("_CombinedAvatar");
-            go.transform.SetParent(equipRoot, false);
-            go.layer = 6; // player
-
-            Mesh mesh = new Mesh();
-            mesh.name = "CombinedAvatarMesh";
-            mesh.vertices = vertices.ToArray();
-            mesh.normals = normals.ToArray();
-            mesh.tangents = tangents.ToArray();
-            if (hasAnyUv) mesh.uv = uvs.ToArray();
-            if (hasAnyUv2) mesh.uv2 = uvs2.ToArray();
-            if (hasAnyUv3) mesh.uv3 = uvs3.ToArray();
-            if (hasAnyColor) mesh.colors32 = colors.ToArray();
-            mesh.boneWeights = weights.ToArray();
-            mesh.bindposes = bindposes.ToArray();
-            mesh.subMeshCount = submeshes.Count;
-            for (int s = 0; s < submeshes.Count; s++) mesh.SetTriangles(submeshes[s].ToArray(), s);
-            mesh.RecalculateBounds();
-
-            SkinnedMeshRenderer combined = go.AddComponent<SkinnedMeshRenderer>();
-            combined.sharedMesh = mesh;
-            combined.bones = bones.ToArray();
-            combined.sharedMaterials = materials.ToArray(); // 保留各部件材质实例，不做合并
-            combined.updateWhenOffscreen = true; // 动画中持续更新包围盒，避免被裁剪
-
-            // 关键：合体渲染器必须处在【世界单位变换】下
-            // 蒙皮结果是  R⁻¹ · rootBone.worldToLocal · Σ(w_i · bone_i.localToWorld · bindpose_i · v)
-            // 逐部件渲染时，R 就是该 SMR 自己的 localToWorld、rootBone 是同一根骨骼，
-            // bindpose 也是按此烘焙的 —— 两项抵消，顶点落在正确位置。
-            // 合体时顶点与 bindposes 都是【原样拷贝】，这个抵消关系必须自己保证。
-            // 原版 CombineMesh 的 cs.target 就是角色根（target.localToWorld == 单位矩阵），
-            // 所以这里也必须把合体物体的世界变换清成单位矩阵，否则整个网格被
-            // R⁻¹ · rootBone.localToWorld 拧成一坨（表现就是装备/头发拉成一条长条）。
-            //
-            // 同时 rootBone 取 null：合并后的骨骼数组混了多个部件，各自的 bindpose 基准不同，
-            // 单取某一根作 rootBone 只会对其中一个部件正确。
-            // 与父级解绑，彻底保证 R == I、lossyScale == (1,1,1)。
-            go.transform.SetParent(null, false);
-            go.transform.position = Vector3.zero;
-            go.transform.rotation = Quaternion.identity;
-            go.transform.localScale = Vector3.one;
-            combined.rootBone = null;
-
-            // 关闭被合并部件的渲染（GameObject 保留，供下次重建）
-            foreach (SkinnedMeshRenderer smr in sources) smr.enabled = false;
-
-            combinedSmr = combined;
+            if (!boneToIdx.TryGetValue(sorted[i].Key, out int boneIdx)) continue;
+            idx[n] = boneIdx;
+            val[n] = sorted[i].Value;
+            total += sorted[i].Value;
+            n++;
         }
-        catch (System.Exception e)
+        if (n == 0 || total <= 0f) return fallback;
+
+        var r = new BoneWeight();
+        for (int i = 0; i < n; i++)
         {
-            // 合体异常时恢复各部件独立渲染，避免角色丢失（仅异常时执行，正常路径零开销）
-            Log.Error("[Equip] 合体异常，已恢复各部件独立渲染：" + e);
-            if (combinedSmr != null)
+            float weight = val[i] / total;
+            switch (i)
             {
-                combinedSmr.gameObject.SetActive(false);
-                Destroy(combinedSmr.gameObject);
-                combinedSmr = null;
+                case 0: r.boneIndex0 = idx[i]; r.weight0 = weight; break;
+                case 1: r.boneIndex1 = idx[i]; r.weight1 = weight; break;
+                case 2: r.boneIndex2 = idx[i]; r.weight2 = weight; break;
+                case 3: r.boneIndex3 = idx[i]; r.weight3 = weight; break;
             }
-            foreach (SkinnedMeshRenderer smr in GetAllActiveSmrs())
-                if (smr != null) smr.enabled = true;
         }
+        return r;
     }
 
-    /// <summary>返回当前所有穿戴的 SMR（主 SMR + 多 SMR 装备的额外 SMR）</summary>
-    private List<SkinnedMeshRenderer> GetAllActiveSmrs()
+    ////////////////////////////////////////工具////////////////////////////////////////
+
+    /// <summary>当前挂载到手上的工具实例（斧头/镐子/剑等）</summary>
+    private GameObject activeTool;
+
+    /// <summary>当前挂载的工具数据，用于比较是否需要重新挂载</summary>
+    private ToolBase wornTool;
+
+    /// <summary>工具挂载后残留在角色身上的附属节点</summary>
+    private readonly List<GameObject> activeToolExtras = new List<GameObject>();
+
+    /// <summary>
+    /// 把工具挂到WeaponRoot，挂到Bip001 R Finger11，支持传null卸下装备
+    /// </summary>
+    public void SetTool(ToolBase tool)
     {
-        var list = new List<SkinnedMeshRenderer>();
-        foreach (var kv in activeSmrs)
-            if (kv.Value != null) list.Add(kv.Value);
-        foreach (var kv in activeSmrExtras)
+        if (tool == null)
         {
-            if (kv.Value == null) continue;
-            foreach (GameObject go in kv.Value)
+            ClearTool();
+            return;
+        }
+
+        // 比较是否一样，如果一样则不重新挂载
+        if (wornTool != null && tool.IsSameAs(wornTool))
+        {
+            wornTool = tool;
+            return;
+        }
+
+        ClearTool();
+
+        GameObject prefab = Resources.Load<GameObject>(tool.prefabPath);
+        if (prefab == null)
+        {
+            PK.Log.Error("[Equip] SetTool 加载工具预制体失败：" + tool.prefabPath);
+            return;
+        }
+
+        GameObject instance = Instantiate(prefab, equipRoot);
+        instance.name = prefab.name;
+
+        Transform hand = GetHandBone();
+        Transform weaponRoot = FindChildRecursive(instance.transform, "WeaponRoot");
+        if (weaponRoot == null)
+        {
+            PK.Log.Error("[Equip] SetTool 工具预制体缺少 WeaponRoot：" + prefab.name);
+            Destroy(instance);
+            return;
+        }
+
+        weaponRoot.SetParent(hand, true);
+        weaponRoot.localPosition = Vector3.zero;
+
+        activeTool = instance;
+        activeToolExtras.Add(weaponRoot.gameObject);
+
+        foreach (var nodeName in new[] { "BalloonRoot", "IK Chain001", "Line001" })
+        {
+            Transform node = FindChildRecursive(instance.transform, nodeName);
+            if (node != null)
             {
-                if (go == null) continue;
-                SkinnedMeshRenderer s = go.GetComponent<SkinnedMeshRenderer>();
-                if (s != null) list.Add(s);
+                node.SetParent(transform, true);
+                activeToolExtras.Add(node.gameObject);
             }
         }
-        return list;
+
+        SetLayerRecursively(instance.transform, 6);
+
+        wornTool = tool;
     }
+
+    /// <summary>销毁当前工具实例及附属节点</summary>
+    public void ClearTool()
+    {
+        Destroy(activeTool);
+        activeTool = null;
+        wornTool = null;
+        foreach (var extra in activeToolExtras)
+        {
+            Destroy(extra);
+        }
+        activeToolExtras.Clear();
+    }
+
+    /// <summary>优先取右手食指骨骼，其次右手手掌，再退左手手掌</summary>
+    private Transform GetHandBone()
+    {
+        Transform root = GetBonesRoot();
+        Transform finger = FindChildRecursive(root, "Bip001 R Finger11");
+        if (finger != null) return finger;
+        Transform right = FindChildRecursive(root, "Bip001 R Hand");
+        if (right != null) return right;
+        return FindChildRecursive(root, "Bip001 L Hand");
+    }
+
+    ////////////////////////////////////////眨眼////////////////////////////////////////
+
+    /// <summary>当前表情用的材质实例（首次访问时从 sharedMaterial 克隆，避免修改到共享资产、也避免多个角色互相干扰）</summary>
+    private Material eyeMaterial;
+
+    /// <summary>
+    /// 表情贴图的UV偏移量。
+    /// 实测来源：头部网格 Girl0000_Head 的 38 个眼睛顶点，其 uv1-uv0 恒为 (0.471780, -0.000940)，
+    /// 即美术做好的闭眼坐标与睁眼坐标之差。合体烘焙会重排UV，原始uv1的绝对坐标不再适用，
+    /// 但这个相对偏移保持不变，所以用它来切左右两半。
+    /// </summary>
+    private static readonly Vector2 EyeBlinkUVOffset = new Vector2(0.471780f, -0.000940f);
+
+    /// <summary>眨眼调试开关：打开后打印找到的材质与写入的属性，用于排查"不眨眼"。</summary>
+    public bool debugEyeBlink = false;   // 排查完请改回 false
+
+    /// <summary>眨眼。true = 闭眼，false = 睁眼。切换表情贴图的 UV 偏移。</summary>
+    public void SetEyeBlink(bool shouldBlink)
+    {
+        Material mat = GetEyeMaterial();
+        if (mat == null)
+        {
+            if (debugEyeBlink) Debug.LogWarning("[Blink] 没找到表情材质，跳过。" + EyeMaterialReport());
+            return;
+        }
+
+        ApplyBlinkToMaterial(mat, shouldBlink);
+
+        if (debugEyeBlink)
+            Debug.Log("[Blink] " + (shouldBlink ? "闭眼" : "睁眼") + " -> 材质 '" + mat.name
+                + "' (shader " + (mat.shader == null ? "null" : mat.shader.name) + ")"
+                + "  _MaskUVOffset=" + (mat.HasProperty("_MaskUVOffset") ? mat.GetVector("_MaskUVOffset").ToString("F4") : "无此属性")
+                + "  _2uvSwitch=" + (mat.HasProperty("_2uvSwitch") ? mat.GetFloat("_2uvSwitch").ToString("F2") : "无此属性"));
+    }
+
+    /// <summary>
+    /// 取角色表情材质。眼睛由带表情遮罩的那件渲染，识别方式（按优先级）：
+    ///   1) 原版 Apowo 双 UV 眼睛 Shader —— 开关叫 _2uvSwitch
+    ///   2) 子网格材质名含 Head 的（组合渲染器里 Head 只是其中一个子网格，如 Girl0009_Head(Clone)_Toon）
+    ///   3) 带 _SkinMask 的 UTS 表情件
+    /// 先从 activeSmrs 找；找不到就退回扫描整个角色层级（LocalPlayer/NetPlayer 上 activeSmrs 可能已失效）。
+    /// </summary>
+    private Material GetEyeMaterial()
+    {
+        if (eyeMaterial != null) return eyeMaterial;
+
+        // 第一轮：装备系统记录的渲染器
+        Material m1 = FindEyeMaterialIn(GetAllActiveSmrs());
+        if (m1 != null) return m1;
+
+        // 第二轮：按层级扫不到的渲染器，改为用「骨骼是否属于本角色」来认领：
+        // bones 里含有本 Equip 的 bonesRoot 下的骨骼，即认定属于本角色。
+        if (bonesRoot != null)
+        {
+            var referenced = new List<SkinnedMeshRenderer>();
+            foreach (SkinnedMeshRenderer s in UnityEngine.Resources.FindObjectsOfTypeAll<SkinnedMeshRenderer>())
+            {
+                if (s == null || s.sharedMesh == null) continue;
+                if (!s.gameObject.scene.IsValid()) continue;          // 排除预制体资产
+                if (s.bones == null || s.bones.Length == 0) continue;
+
+                for (int i = 0; i < s.bones.Length; i++)
+                {
+                    var b = s.bones[i];
+                    if (b == null) continue;
+                    if (b == bonesRoot || b.IsChildOf(bonesRoot))
+                    {
+                        referenced.Add(s);
+                        break;
+                    }
+                }
+            }
+            Material m2a = FindEyeMaterialIn(referenced);
+            if (m2a != null) return m2a;
+        }
+
+        // 第三轮：兜底扫本 Equip 及其父根层级（覆盖未合体的情况）
+        var fallback = new List<SkinnedMeshRenderer>();
+        Transform top = transform;
+        while (top.parent != null) top = top.parent;
+        fallback.AddRange(top.GetComponentsInChildren<SkinnedMeshRenderer>(true));
+        fallback.AddRange(transform.GetComponentsInChildren<SkinnedMeshRenderer>(true));
+        Material m2 = FindEyeMaterialIn(fallback);
+        if (m2 != null) return m2;
+
+        return null;
+    }
+
+    /// <summary>在给定渲染器集合里找表情材质（找到就克隆并写回）。</summary>
+    private Material FindEyeMaterialIn(List<SkinnedMeshRenderer> smrs)
+    {
+        if (smrs == null) return null;
+
+        foreach (SkinnedMeshRenderer smr in smrs)
+        {
+            if (smr == null) continue;
+
+            Material[] arr = smr.sharedMaterials;
+            if (arr == null || arr.Length == 0) continue;
+
+            // 已经克隆过的直接复用（幂等，避免重复克隆）
+            for (int i = 0; i < arr.Length; i++)
+            {
+                if (arr[i] != null && arr[i].name.EndsWith("_Blink", System.StringComparison.Ordinal))
+                {
+                    eyeMaterial = arr[i];
+                    return eyeMaterial;
+                }
+            }
+
+            // 找"眼睛材质"：
+            //   1) 原版 Apowo 双 UV 眼睛 Shader（开关 _2uvSwitch）
+            //   2) 子网格材质名含 Head 的（组合渲染器里 Head 只是其中一个子网格）
+            //   3) 带 _SkinMask 的 UTS 表情件
+            int idx = -1;
+            for (int i = 0; i < arr.Length; i++)
+            {
+                var m = arr[i];
+                if (m != null && m.HasProperty("_2uvSwitch")) { idx = i; break; }
+            }
+            if (idx < 0)
+            {
+                for (int i = 0; i < arr.Length; i++)
+                {
+                    var m = arr[i];
+                    if (m != null && m.name.IndexOf("Head", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                    { idx = i; break; }
+                }
+            }
+            if (idx < 0)
+            {
+                for (int i = 0; i < arr.Length; i++)
+                {
+                    var m = arr[i];
+                    if (m != null && m.HasProperty("_UseSecondUV") && m.HasProperty("_SkinMask"))
+                    { idx = i; break; }
+                }
+            }
+            // 必须有表情切换开关才认，否则跳过这个 SMR（不要退化成改第一个材质）
+            if (idx < 0) continue;
+            if (arr[idx] == null) continue;
+            if (!arr[idx].HasProperty("_2uvSwitch") && !arr[idx].HasProperty("_MaskUVOffset")) continue;
+
+            Material src = arr[idx];
+            eyeMaterial = Instantiate(src);
+            eyeMaterial.name = src.name + "_Blink";
+            arr[idx] = eyeMaterial;
+            smr.sharedMaterials = arr;
+            return eyeMaterial;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 把眨眼状态写到材质上。
+    /// 用「遮罩/主贴图 UV 偏移」切换左右两半：
+    ///   睁眼 → 偏移 (0, 0)
+    ///   闭眼 → 偏移 EyeBlinkUVOffset = (0.47178, -0.00094)（取自网格 uv1-uv0 的实测恒定差）
+    /// 之所以不用第二套 UV 的绝对坐标：合体烘焙会重排 UV，原始 uv1（0.877）在图集里已不在闭眼位置，
+    /// 但「睁眼到闭眼的相对偏移」不随重排改变，所以偏移方案对源网格与合体网格都成立。
+    ///   Apowo 原版双 UV 眼睛 Shader → _2uvSwitch
+    /// </summary>
+    private static void ApplyBlinkToMaterial(Material mat, bool shouldBlink)
+    {
+        if (mat == null) return;
+        float v = shouldBlink ? 1f : 0f;
+        if (mat.HasProperty("_2uvSwitch")) mat.SetFloat("_2uvSwitch", v);
+        if (mat.HasProperty("_UseSecondUV")) mat.SetFloat("_UseSecondUV", 0f);
+        if (mat.HasProperty("_MaskUVOffset"))
+            mat.SetVector("_MaskUVOffset", shouldBlink
+                ? new Vector4(EyeBlinkUVOffset.x, EyeBlinkUVOffset.y, 0f, 0f)
+                : Vector4.zero); 
+    }
+
+    /// <summary>列出当前所有装备材质，用于排查为什么找不到表情材质。</summary>
+    public string EyeMaterialReport()
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append(" 当前装备材质: ");
+        foreach (SkinnedMeshRenderer smr in GetAllActiveSmrs())
+        {
+            if (smr == null) continue;
+            var arr = smr.sharedMaterials;
+            for (int i = 0; i < (arr == null ? 0 : arr.Length); i++)
+            {
+                var m = arr[i];
+                if (m == null) continue;
+                sb.Append("[").Append(smr.name).Append(":").Append(i).Append("]").Append(m.name)
+                  .Append("(").Append(m.shader == null ? "?" : m.shader.name).Append(")")
+                  .Append(m.HasProperty("_MaskUVOffset") ? " 有Offset" : "")
+                  .Append(m.HasProperty("_2uvSwitch") ? " 有2uvSwitch" : "")
+                  .Append("  ");
+            }
+        }
+        return sb.ToString();
+    }
+
+    ////////////////////////////////////////编辑器辅助与内部结构////////////////////////////////////////
 
     private Mesh _bakedCache;
 
-
     private void OnDrawGizmosSelected()
     {
+        return;
         if (_bakedCache == null) _bakedCache = new Mesh();
         Gizmos.color = Color.green;
 
@@ -1269,104 +1538,6 @@ public class Equip : MonoBehaviour
         }
     }
 
-    // 合并Bottom和Stocking的顶点
-    private void WeldBottomStocking(float threshold = 0.001f)
-    {
-        if (!activeSmrs.TryGetValue(EClothType.BOTTOM, out var bottomSmr) || bottomSmr == null) return;
-        if (!activeSmrs.TryGetValue(EClothType.STOCKING, out var stockSmr) || stockSmr == null) return;
-
-        var bMesh = bottomSmr.sharedMesh;
-        var sMesh = stockSmr.sharedMesh;
-        if (bMesh == null || sMesh == null) return;
-
-        bMesh = Instantiate(bMesh); bottomSmr.sharedMesh = bMesh;
-        sMesh = Instantiate(sMesh); stockSmr.sharedMesh = sMesh;
-
-        var bVerts = bMesh.vertices;
-        var sVerts = sMesh.vertices;
-        var bWeights = bMesh.boneWeights;
-        var sWeights = sMesh.boneWeights;
-
-        var bBones = bottomSmr.bones;
-        var sBones = stockSmr.bones;
-
-        // Transform: 各自索引
-        var bBoneToIdx = new Dictionary<Transform, int>();
-        var sBoneToIdx = new Dictionary<Transform, int>();
-        for (int i = 0; i < bBones.Length; i++) if (bBones[i] != null) bBoneToIdx[bBones[i]] = i;
-        for (int i = 0; i < sBones.Length; i++) if (sBones[i] != null) sBoneToIdx[sBones[i]] = i;
-
-        Matrix4x4 sToB = bottomSmr.transform.worldToLocalMatrix * stockSmr.transform.localToWorldMatrix;
-        float sqr = threshold * threshold;
-
-        for (int i = 0; i < bVerts.Length; i++)
-        {
-            Vector3 bp = bVerts[i];
-            for (int j = 0; j < sVerts.Length; j++)
-            {
-                Vector3 sp = sToB.MultiplyPoint3x4(sVerts[j]);
-                if ((bp - sp).sqrMagnitude > sqr) continue;
-
-                // 用 Transform 为 key 做平均
-                var avg = new Dictionary<Transform, float>();
-                AccumulateBW(avg, bBones, bWeights[i]);
-                AccumulateBW(avg, sBones, sWeights[j]);
-
-                var list = new List<KeyValuePair<Transform, float>>(avg);
-                list.Sort((a, b) => b.Value.CompareTo(a.Value));
-
-                // 各自映射回自己的索引空间
-                bWeights[i] = MakeBW(list, bBoneToIdx);
-                sWeights[j] = MakeBW(list, sBoneToIdx);
-            }
-        }
-
-        bMesh.boneWeights = bWeights;
-        sMesh.boneWeights = sWeights;
-    }
-
-    private static void AccumulateBW(Dictionary<Transform, float> dict, Transform[] bones, BoneWeight bw)
-    {
-        void Add(int idx, float w)
-        {
-            if (w <= 0f || idx < 0 || idx >= bones.Length) return;
-            var t = bones[idx];
-            if (t == null) return;
-            dict.TryGetValue(t, out var c);
-            dict[t] = c + w;
-        }
-        Add(bw.boneIndex0, bw.weight0);
-        Add(bw.boneIndex1, bw.weight1);
-        Add(bw.boneIndex2, bw.weight2);
-        Add(bw.boneIndex3, bw.weight3);
-    }
-
-    private static BoneWeight MakeBW(List<KeyValuePair<Transform, float>> sorted, Dictionary<Transform, int> boneToIdx)
-    {
-        float total = 0f;
-        int n = Mathf.Min(4, sorted.Count);
-        for (int i = 0; i < n; i++) total += sorted[i].Value;
-        if (total <= 0f) return new BoneWeight();
-
-        var r = new BoneWeight();
-        int w = 0;
-        for (int i = 0; i < n && w < 4; i++)
-        {
-            if (!boneToIdx.TryGetValue(sorted[i].Key, out int idx)) continue;
-            float weight = sorted[i].Value / total;
-            switch (w)
-            {
-                case 0: r.boneIndex0 = idx; r.weight0 = weight; break;
-                case 1: r.boneIndex1 = idx; r.weight1 = weight; break;
-                case 2: r.boneIndex2 = idx; r.weight2 = weight; break;
-                case 3: r.boneIndex3 = idx; r.weight3 = weight; break;
-            }
-            w++;
-        }
-        return r;
-    }
-
-    //  内部数据结构
     [System.Serializable]
     public struct SlotColors
     {

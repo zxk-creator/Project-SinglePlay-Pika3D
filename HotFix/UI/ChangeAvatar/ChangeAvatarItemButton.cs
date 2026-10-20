@@ -24,7 +24,8 @@ public class ChangeAvatarItemButton : UIBase
         {
             Log.NullPtr("AvatarButton: ChangeCloth");
         }
-        Context.localPlayer.inventory.ChangeCloth(Cloth, true);
+        // TODO: 需要更新API
+        // Context.localPlayer.inventory.ChangeCloth(Cloth, true);
     }
 
     public override void Show()
